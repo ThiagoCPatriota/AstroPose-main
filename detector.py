@@ -4,7 +4,7 @@ import torch
 import time
 import math
 import numpy as np
-
+from reconhecimento_facial import ReconhecimentoFacial
 
 def _to_np(x):
     """Converte tensor (CPU/CUDA) para numpy."""
@@ -12,10 +12,6 @@ def _to_np(x):
         return x.detach().cpu().numpy()
     return np.asarray(x)
 
-
-# ==========================
-# Detecção de Pose (YOLOv8)
-# ==========================
 class PoseDetector:
     def get_keypoints(self):
         return getattr(self, "_last_keypoints_ui", None)
@@ -31,7 +27,6 @@ class PoseDetector:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-        # timers/estados dos alertas
         self.tempo_cotovelo = {}
         self.tempo_inclinacao = {}
         self.tempo_inclinacao_frontal = {}
@@ -40,10 +35,34 @@ class PoseDetector:
         self.tempo_agachamento_incorreto = {}
 
         self._last_keypoints_ui = None
-        self._last_issue_code = "OK"   # <— novo: erro dominante do usuário principal
+        self._last_issue_code = "OK"
+
+        # Novo: Reconhecimento Facial
+        self.face_recognizer = ReconhecimentoFacial()
+        self.cadastro_ativo = False
+        self.nome_cadastro = None
 
         if not self.cap.isOpened():
             raise Exception("Erro ao acessar a webcam.")
+
+    def iniciar_cadastro_astronauta(self, nome=None):
+        """Inicia o modo de cadastro de astronauta"""
+        self.cadastro_ativo = True
+        self.nome_cadastro = nome
+        return f"Modo cadastro ativo para: {nome if nome else 'novo astronauta'}"
+
+    def finalizar_cadastro_astronauta(self, frame):
+        """Finaliza o cadastro com o frame atual"""
+        if self.cadastro_ativo:
+            success = self.face_recognizer.cadastrar_astronauta(frame, self.nome_cadastro)
+            self.cadastro_ativo = False
+            self.nome_cadastro = None
+            return success
+        return False
+
+    def esta_em_modo_cadastro(self):
+        """Verifica se está em modo de cadastro"""
+        return self.cadastro_ativo
 
     def detectar_pose(self):
         ret, frame = self.cap.read()
@@ -56,28 +75,52 @@ class PoseDetector:
         annotated_frame = res0.plot()
         mensagens = []
 
-        # ---------- Pessoas, caixas e keypoints em CPU/NumPy ----------
+        # ---------- Reconhecimento Facial ----------
+        face_results = self.face_recognizer.reconhecer_rostos(frame)
+        for name, (left, top, right, bottom), confidence in face_results:
+            if confidence > 0.7:
+                color = (0, 255, 0)
+                label = f"{name} ({confidence:.0%})"
+            elif confidence > 0.5:
+                color = (0, 255, 255)
+                label = f"{name}? ({confidence:.0%})"
+            else:
+                color = (0, 0, 255)
+                label = "Desconhecido"
+            
+            cv2.rectangle(annotated_frame, (left, top), (right, bottom), color, 2)
+            cv2.putText(annotated_frame, label, (left, top - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            
+            if confidence > 0.7 and name != "Desconhecido":
+                mensagens.append(f"Astronauta {name} detectado!")
+
+        # Modo Cadastro
+        if self.cadastro_ativo:
+            cv2.putText(annotated_frame, "MODO CADASTRO - Posicione o rosto", 
+                        (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            cv2.putText(annotated_frame, f"Nome: {self.nome_cadastro if self.nome_cadastro else 'Digite nome...'}", 
+                        (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        # ---------- Detecção de Pose (código original) ----------
         n = len(res0.boxes) if res0.boxes is not None else 0
         if n > 0:
-            xy_all = _to_np(res0.keypoints.xy)          # (n,17,2)
+            xy_all = _to_np(res0.keypoints.xy)
             try:
-                conf_all = _to_np(res0.keypoints.conf)  # (n,17) (se existir)
+                conf_all = _to_np(res0.keypoints.conf)
             except AttributeError:
                 conf_all = np.ones((n, 17), dtype=np.float32)
-            xyxy_all = _to_np(res0.boxes.xyxy)          # (n,4)
+            xyxy_all = _to_np(res0.boxes.xyxy)
 
-            # pessoa principal = maior área
             areas = (xyxy_all[:, 2] - xyxy_all[:, 0]) * (xyxy_all[:, 3] - xyxy_all[:, 1])
             idx_max = int(np.argmax(areas))
 
-            # keypoints da pessoa principal, para a UI
             kp0 = [(float(x), float(y), float(c)) for (x, y), c in zip(xy_all[idx_max], conf_all[idx_max])]
             self._last_keypoints_ui = kp0
 
-            # ---------- Varre cada pessoa ----------
             for i in range(n):
-                pessoaKey = xy_all[i]  # (17,2) np.float32
-                xyxy = xyxy_all[i]     # (4,)
+                pessoaKey = xy_all[i]
+                xyxy = xyxy_all[i]
                 box_tuple = (xyxy[0], xyxy[1], xyxy[2], xyxy[3])
 
                 cotoveloAcima = False
@@ -87,9 +130,9 @@ class PoseDetector:
                 inclinaLombar = False
                 agachamento_incorreto = False
                 agachamento_iniciado = {}
-                desalinhado = False  # <— garantir definido
+                desalinhado = False
 
-                # --- Checks ---
+                # Checks originais (mantidos)
                 try:
                     if CotoveloAcimaCabeca(pessoaKey).calcular():
                         cotoveloAcima = True
@@ -139,7 +182,7 @@ class PoseDetector:
                 except Exception as e:
                     print(f"Erro ao calcular ângulo do joelho: {e}")
 
-                # --- Temporizações / mensagens visuais ---
+                # Temporizações originais (mantidas)
                 if cotoveloAcima:
                     if i not in self.tempo_cotovelo:
                         self.tempo_cotovelo[i] = time.time()
@@ -198,7 +241,6 @@ class PoseDetector:
                 except Exception as e:
                     print(f"Erro ao calcular torção: {e}")
 
-                # --- Escolhe e expõe o erro dominante para a pessoa principal ---
                 issue = "OK"
                 if agachamento_incorreto or inclinaLombar:
                     issue = "LUMBAR"
@@ -227,7 +269,6 @@ class PoseDetector:
         cv2.destroyAllWindows()
 
     def bordaVermelha(self, box_or_xyxy, annotated_frame):
-        """Desenha retângulo; aceita Boxes ou tupla/lista (x1,y1,x2,y2)."""
         if hasattr(box_or_xyxy, "xyxy"):
             xyxy = _to_np(box_or_xyxy.xyxy[0]).tolist()
         else:
@@ -235,16 +276,14 @@ class PoseDetector:
         x1, y1, x2, y2 = map(int, xyxy[:4])
         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 5)
 
-
-# ---------------- Verificadores ----------------
+# ---------------- Verificadores (mantidos originais) ----------------
 class CotoveloAcimaCabeca:
     def __init__(self, keypoints):
-        self.cotoveloDireito = keypoints[8]   # r_elbow
-        self.cotoveloEsquerdo = keypoints[7]  # l_elbow
-        self.nariz = keypoints[0]             # nose
+        self.cotoveloDireito = keypoints[8]
+        self.cotoveloEsquerdo = keypoints[7]
+        self.nariz = keypoints[0]
     def calcular(self):
         return (self.cotoveloDireito[1] < self.nariz[1]) or (self.cotoveloEsquerdo[1] < self.nariz[1])
-
 
 class InclinacaoParaTras:
     def __init__(self, keypoints):
@@ -261,7 +300,6 @@ class InclinacaoParaTras:
         cabeca_inclinada = nariz_x < (quadril_medio_x - 30)
         return bool(ombros_inclinados and cabeca_inclinada)
 
-
 class inclinacaoFrontal:
     def __init__(self, keypoints):
         self.ombroDireito = keypoints[6]
@@ -277,7 +315,6 @@ class inclinacaoFrontal:
             return 0.0
         return (centroOmbrosY - centroQuadrisY) / alturaCorpo
 
-
 class AlinhamentoOmbros:
     def __init__(self, keypoints):
         self.ombro_direito = keypoints[6]
@@ -285,7 +322,6 @@ class AlinhamentoOmbros:
     def verificar(self, limite_tolerancia=15):
         diferenca_altura = abs(self.ombro_direito[1] - self.ombro_esquerdo[1])
         return diferenca_altura > limite_tolerancia
-
 
 class torcaoPescoco:
     def __init__(self, keypoints):
@@ -334,7 +370,6 @@ class torcaoPescoco:
                 return True
         return False
 
-
 class InclinacaoLombar:
     def __init__(self, keypoints):
         self.ombro_esq = keypoints[5]
@@ -353,7 +388,6 @@ class InclinacaoLombar:
         risco_ombro = ANGULO_RISCO_MIN <= angulo_ombro <= ANGULO_RISCO_MAX
         risco_quadril = ANGULO_RISCO_MIN <= angulo_quadril <= ANGULO_RISCO_MAX
         return risco_ombro or risco_quadril
-
 
 class Agachamento:
     def __init__(self, keypoints):

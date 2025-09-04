@@ -407,6 +407,10 @@ class PoseDetectionGUI:
         self.letter_index = 0
         self._animating = False
 
+        # Novas variáveis para cadastro de astronautas
+        self.cadastro_ativo = False
+        self.nome_astronauta = tk.StringVar()
+
         self.root.configure(bg=self.COLORS["bg"])
         self.root.grid_rowconfigure(1, weight=1)
         self.root.grid_columnconfigure(0, weight=3)
@@ -421,8 +425,10 @@ class PoseDetectionGUI:
 
     def _configure_style(self):
         style = ttk.Style()
-        try: style.theme_use("clam")
-        except: pass
+        try: 
+            style.theme_use("clam")
+        except: 
+            pass
         style.configure("TFrame", background=self.COLORS["bg"])
         style.configure("Card.TFrame", background=self.COLORS["card"], borderwidth=1, relief="ridge")
         style.configure("Panel.TFrame", background=self.COLORS["panel"])
@@ -436,6 +442,12 @@ class PoseDetectionGUI:
         style.map("Accent.TButton", background=[("!disabled", self.COLORS["accent"])], foreground=[("!disabled", "#0b1020")])
         style.configure("Danger.TButton", font=("Segoe UI", 11, "bold"), padding=8)
         style.map("Danger.TButton", background=[("!disabled", self.COLORS["danger"])], foreground=[("!disabled", "#0b1020")])
+        
+        # Novo estilo para botão de warning
+        style.configure("Warning.TButton", font=("Segoe UI", 11, "bold"), padding=8)
+        style.map("Warning.TButton", background=[("!disabled", self.COLORS["warning"])], 
+                  foreground=[("!disabled", "#0b1020")])
+        
         style.configure("TNotebook", background=self.COLORS["panel"])
         style.configure("TNotebook.Tab", padding=(14, 8), font=("Segoe UI", 10, "bold"),
                         background=self.COLORS["panel"], foreground=self.COLORS["muted"])
@@ -537,19 +549,71 @@ class PoseDetectionGUI:
                          style="Muted.TLabel", wraplength=380, justify="left")
         note.pack(anchor="w", padx=12, pady=(0, 12))
 
+        # --- Controles de Astronautas ---
+        self._build_astronaut_controls()
+
         self.close_button = ttk.Button(sidebar, text="Fechar", style="Danger.TButton", command=self.close_window)
         self.close_button.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
 
+    def _build_astronaut_controls(self):
+        """Adiciona controles para cadastro de astronautas"""
+        astronaut_frame = ttk.Frame(self.root, style="Card.TFrame")
+        astronaut_frame.grid(row=2, column=1, padx=(8, 16), pady=(0, 8), sticky="ew")
+        
+        ttk.Label(astronaut_frame, text="Gerenciar Astronautas", style="Title.TLabel").pack(anchor="w", padx=12, pady=(12, 8))
+        
+        nome_frame = ttk.Frame(astronaut_frame, style="TFrame")
+        nome_frame.pack(fill="x", padx=12, pady=(0, 8))
+        
+        ttk.Label(nome_frame, text="Nome:", style="Body.TLabel").pack(side="left")
+        nome_entry = ttk.Entry(nome_frame, textvariable=self.nome_astronauta)
+        nome_entry.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        
+        btn_frame = ttk.Frame(astronaut_frame, style="TFrame")
+        btn_frame.pack(fill="x", padx=12, pady=(0, 12))
+        
+        ttk.Button(btn_frame, text="Cadastrar", style="Accent.TButton", 
+                  command=self._iniciar_cadastro).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        
+        ttk.Button(btn_frame, text="Capturar", style="Warning.TButton", 
+                  command=self._capturar_cadastro).pack(side="left", fill="x", expand=True, padx=(4, 0))
+
     def _build_statusbar(self):
         status = ttk.Frame(self.root, style="Panel.TFrame")
-        status.grid(row=2, column=0, columnspan=2, sticky="ew")
-        for i in range(4): status.grid_columnconfigure(i, weight=1)
+        status.grid(row=3, column=0, columnspan=2, sticky="ew")
+        for i in range(4): 
+            status.grid_columnconfigure(i, weight=1)
         ttk.Label(status, textvariable=self.fps_text, style="Status.TLabel").grid(row=0, column=0, sticky="w", padx=16, pady=6)
         ttk.Label(status, textvariable=self.res_text, style="Status.TLabel").grid(row=0, column=1, sticky="w", padx=16, pady=6)
         ttk.Label(status, textvariable=self.mode_text, style="Status.TLabel").grid(row=0, column=2, sticky="w", padx=16, pady=6)
         ttk.Label(status, text="© 2025 AstroPose — Demo", style="Status.TLabel").grid(row=0, column=3, sticky="e", padx=16, pady=6)
 
-    # ---------- ações ----------
+    def _iniciar_cadastro(self):
+        """Inicia o modo de cadastro"""
+        nome = self.nome_astronauta.get().strip()
+        if not nome:
+            self.info_text.set("Digite um nome para o astronauta primeiro!")
+            return
+        
+        if hasattr(self, 'pose_detector') and self.pose_detector:
+            self.pose_detector.iniciar_cadastro_astronauta(nome)
+            self.cadastro_ativo = True
+            self.info_text.set(f"Modo cadastro ativo para {nome}. Posicione o rosto e clique em Capturar.")
+
+    def _capturar_cadastro(self):
+        """Captura o frame atual para cadastro"""
+        if self.cadastro_ativo and hasattr(self, 'pose_detector') and self.pose_detector:
+            ret, frame = self.pose_detector.cap.read()
+            if ret:
+                success = self.pose_detector.finalizar_cadastro_astronauta(frame)
+                if success:
+                    self.info_text.set("Astronauta cadastrado com sucesso!")
+                    self.cadastro_ativo = False
+                else:
+                    self.info_text.set("Erro ao cadastrar astronauta. Verifique se há um rosto visível.")
+
+    # ... (os demais métodos da classe PoseDetectionGUI permanecem iguais) ...
+
     def run_detection(self):
         self._start_title_animation()
         self.status_text.set("Inicializando...")
@@ -560,9 +624,13 @@ class PoseDetectionGUI:
         threading.Thread(target=self.start_pose_detection, daemon=True).start()
 
     def _start_title_animation(self):
-        self.letter_index = 0; self._animating = True; self._animate_title_step()
+        self.letter_index = 0
+        self._animating = True
+        self._animate_title_step()
+        
     def _animate_title_step(self):
-        if not self._animating: return
+        if not self._animating: 
+            return
         text = self.loading_text[: self.letter_index + 1]
         self.title_label.config(text=text, foreground=self._next_accent_color())
         self.letter_index += 1
@@ -571,6 +639,7 @@ class PoseDetectionGUI:
         else:
             self.root.after(350, lambda: self.title_label.config(foreground=self.COLORS["text"]))
             self._animating = False
+            
     def _next_accent_color(self):
         return [self.COLORS["accent"], self.COLORS["accent2"], self.COLORS["success"], self.COLORS["warning"]][self.letter_index % 4]
 
@@ -620,13 +689,13 @@ class PoseDetectionGUI:
                 kp_use = keypoints if got_kp else self._get_keypoints_safe()
                 if kp_use is not None:
                     self.coach_view.update_pose(kp_use)
-                    # NOVO: envia o erro dominante para o boneco
                     if hasattr(self.pose_detector, "get_issue_code"):
                         self.coach_view.set_external_issue(self.pose_detector.get_issue_code())
 
                     if self.coach_view.target_angles:
                         curr = _compute_angles(kp_use)
-                        ok = 0; tot = 0
+                        ok = 0
+                        tot = 0
                         for j, tgt in self.coach_view.target_angles.items():
                             a = curr.get(j)
                             if tgt is None or a is None:
@@ -648,8 +717,11 @@ class PoseDetectionGUI:
                 self.label.imgtk = imgtk
                 self.label.configure(image=imgtk)
 
-                now = time.time(); dt = now - prev_time; prev_time = now
-                if dt > 0: self.fps_text.set(f"FPS: {1.0/dt:.1f}")
+                now = time.time()
+                dt = now - prev_time
+                prev_time = now
+                if dt > 0: 
+                    self.fps_text.set(f"FPS: {1.0/dt:.1f}")
 
                 self.status_text.set("Detectando...")
                 self.status_pill.configure(bg=self.COLORS["panel"], fg=self.COLORS["success"])
@@ -660,7 +732,8 @@ class PoseDetectionGUI:
 
         except Exception as e:
             try:
-                if self.pose_detector: self.pose_detector.liberarRecursos()
+                if self.pose_detector: 
+                    self.pose_detector.liberarRecursos()
             except Exception:
                 pass
             self.loading_label.place_forget()
@@ -670,14 +743,15 @@ class PoseDetectionGUI:
 
     def close_window(self):
         try:
-            if self.pose_detector: self.pose_detector.liberarRecursos()
+            if self.pose_detector: 
+                self.pose_detector.liberarRecursos()
         except Exception:
             pass
-        self.root.quit(); self.root.destroy()
+        self.root.quit()
+        self.root.destroy()
 
     def run(self):
         self.root.mainloop()
-
 
 # ---------- Entry point ----------
 def main():
