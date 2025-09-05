@@ -1,18 +1,25 @@
+# astropose_pyside.py
 import os
-import tkinter as tk
-from tkinter import ttk
-from PIL import Image, ImageTk
-import threading
-import cv2
-from detector import PoseDetector
-import time
+import sys
 import math
+import time
+import threading
 
-# ==========================
-# AstroPose - UI com "Bonequinho Coach"
-# ==========================
+from PySide6.QtCore import (Qt, QThread, QObject, Signal, Slot, QSize, QRectF)
+from PySide6.QtGui import (QPainter, QColor, QFont, QImage, QPixmap)
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit, QStackedWidget, QLineEdit, QGroupBox, QFormLayout,
+    QFrame, QStatusBar, QButtonGroup, QSizePolicy
+)
+import qt_material
+from PIL import Image
+import numpy as np
+import cv2
 
-# ----- Sprites -----
+# Import PoseDetector (mesmo que no seu código original)
+from detector import PoseDetector
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPRITE_DIR = os.path.join(BASE_DIR, "img")
 SPRITE_MAP = {
@@ -24,7 +31,6 @@ SPRITE_MAP = {
 SPRITE_CHOICES = ["Auto", "Neutro", "Joinha", "Apontando", "T-pose"]
 MIN_CONF = 0.45
 
-# ----- Keypoints / Esqueleto -----
 KP = {
     "nose": 0, "l_eye": 1, "r_eye": 2, "l_ear": 3, "r_ear": 4,
     "l_shoulder": 5, "r_shoulder": 6, "l_elbow": 7, "r_elbow": 8,
@@ -49,7 +55,6 @@ JOINTS_FOR_ANGLES = {
     "r_shoulder": (KP["r_elbow"], KP["r_shoulder"], KP["r_hip"]),
 }
 
-# ----- Helpers -----
 def _angle(a, b, c):
     try:
         ax, ay = a[:2]; bx, by = b[:2]; cx, cy = c[:2]
@@ -171,42 +176,66 @@ def _choose_sprite_auto(kp):
 
 
 # ==========================
-# Canvas do Coach
+# CoachCanvas (QWidget) - versão PySide6 do CoachView
 # ==========================
-class CoachView:
-    def __init__(self, parent, width=400, height=380, colors=None):
-        self.canvas = tk.Canvas(parent, width=width, height=height, highlightthickness=0, bg=colors["card"])
-        self.canvas.pack(fill="both", expand=True)
-        self.colors = colors
-        self.width = width
-        self.height = height
-
-        self.tolerance_ok = 14
-        self.tolerance_warn = 28
-
+class CoachCanvas(QWidget):
+    def __init__(self, colors=None, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(360, 320)
+        self.colors = colors or {
+            "card": "#0b1220", "muted": "#94a3b8", "danger": "#f87171"
+        }
+        # state
         self.last_current_kp = None
         self.target_angles = None
         self.target_label = None
         self.target_raw_kp = None
-
         self.sprite_choice = "Auto"
         self.sprite_path = None
-        self.sprite_img_ref = None
-
-        # NOVO: erro dominante vindo do detector
+        self.sprite_pix = None
         self.external_issue = None
+        self.tolerance_ok = 14
+        self.tolerance_warn = 28
 
-    # --- API ---
     def set_sprite_choice(self, choice):
         self.sprite_choice = choice
         if choice in SPRITE_MAP and os.path.exists(SPRITE_MAP[choice]):
             self.sprite_path = SPRITE_MAP[choice]
+            self._load_sprite()
         elif choice != "Auto":
             self.sprite_path = None
-        self._redraw()
+            self.sprite_pix = None
+        self.update()
 
     def set_external_issue(self, issue):
         self.external_issue = issue
+
+    def set_target_from_current(self, raw_kp):
+        if not raw_kp:
+            return
+        self.target_raw_kp = raw_kp
+        self.target_angles = _compute_angles(raw_kp)
+        self.target_label = _choose_sprite_auto(raw_kp) or "Neutro"
+        if self.sprite_choice == "Auto":
+            p = SPRITE_MAP.get(self.target_label)
+            self.sprite_path = p if p and os.path.exists(p) else None
+            self._load_sprite()
+        self.update()
+
+    def clear_target(self):
+        self.target_angles = None
+        self.target_label = None
+        self.target_raw_kp = None
+        if self.sprite_choice == "Auto":
+            self.sprite_path = None
+            self.sprite_pix = None
+        self.update()
+
+    def update_pose(self, raw_kp):
+        self.last_current_kp = raw_kp
+        if self.sprite_choice == "Auto":
+            self._choose_sprite_auto_corrective()
+        self.update()
 
     def _issue_to_sprite(self):
         if not self.external_issue or self.external_issue == "OK":
@@ -221,46 +250,20 @@ class CoachView:
         }
         return mapping.get(self.external_issue)
 
-    def set_target_from_current(self, raw_kp):
-        if not raw_kp:
-            return
-        self.target_raw_kp = raw_kp
-        self.target_angles = _compute_angles(raw_kp)
-        self.target_label = _choose_sprite_auto(raw_kp) or "Neutro"
-        if self.sprite_choice == "Auto":
-            p = SPRITE_MAP.get(self.target_label)
-            self.sprite_path = p if p and os.path.exists(p) else None
-        self._redraw()
-
-    def clear_target(self):
-        self.target_angles = None
-        self.target_label = None
-        self.target_raw_kp = None
-        if self.sprite_choice == "Auto":
-            self.sprite_path = None
-        self._redraw()
-
-    def update_pose(self, raw_kp):
-        self.last_current_kp = raw_kp
-        if self.sprite_choice == "Auto":
-            self._choose_sprite_auto_corrective()
-        self._redraw()
-
-    # --- escolha do sprite ---
     def _choose_sprite_auto_corrective(self):
-        # 1) prioridade: erro reportado pelo detector
         name_ext = self._issue_to_sprite()
         if name_ext and self.sprite_choice == "Auto":
             p = SPRITE_MAP.get(name_ext)
             if p and os.path.exists(p):
                 self.sprite_path = p
+                self._load_sprite()
                 return
 
-        # 2) sem erro explícito, usa alvo/heurística
         if self.target_angles is None or self.last_current_kp is None:
             name = _choose_sprite_auto(self.last_current_kp or [])
             p = SPRITE_MAP.get(name)
             self.sprite_path = p if p and os.path.exists(p) else None
+            self._load_sprite()
             return
 
         curr = _compute_angles(self.last_current_kp)
@@ -275,6 +278,7 @@ class CoachView:
             name = self.target_label or "Neutro"
             p = SPRITE_MAP.get(name)
             self.sprite_path = p if p and os.path.exists(p) else None
+            self._load_sprite()
             return
 
         worst_joint = max(diffs, key=diffs.get)
@@ -296,57 +300,59 @@ class CoachView:
 
         p = SPRITE_MAP.get(name)
         self.sprite_path = p if p and os.path.exists(p) else None
+        self._load_sprite()
 
-    # --- desenho ---
-    def _draw_skeleton(self, kp_norm, color="#e5e7eb", thickness=3, highlight_bones=None):
-        if not kp_norm:
-            return
-        MAX_LEN = 260
-        for (i, j) in BONES:
-            pi = kp_norm[i] if i < len(kp_norm) else None
-            pj = kp_norm[j] if j < len(kp_norm) else None
-            if not pi or not pj:
-                continue
-            if math.hypot(pi[0] - pj[0], pi[1] - pj[1]) > MAX_LEN:
-                continue
-            col = self.colors["danger"] if (highlight_bones and ((i, j) in highlight_bones or (j, i) in highlight_bones)) else color
-            self.canvas.create_line(pi[0], pi[1], pj[0], pj[1], fill=col, width=thickness, capstyle="round")
-        for p in kp_norm:
-            if not p:
-                continue
-            self.canvas.create_oval(p[0] - 4, p[1] - 4, p[0] + 4, p[1] + 4, fill=color, outline="")
-
-    def _draw_sprite_target(self):
-        if not self.sprite_path or not os.path.exists(self.sprite_path):
-            return
+    def _load_sprite(self):
         try:
-            img = Image.open(self.sprite_path).convert("RGBA")
-            max_w, max_h = 300, 340
-            w, h = img.size
-            scale = min(max_w / float(w), max_h / float(h))
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-            self.sprite_img_ref = ImageTk.PhotoImage(img)
-            x = self.width * 0.25
-            y = self.height * 0.58
-            self.canvas.create_image(x, y, image=self.sprite_img_ref)
+            if self.sprite_path and os.path.exists(self.sprite_path):
+                img = Image.open(self.sprite_path).convert("RGBA")
+                w, h = img.size
+                max_w, max_h = 200, 220
+                scale = min(max_w / float(w), max_h / float(h), 1.0)
+                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+                data = img.tobytes("raw", "RGBA")
+                qimg = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
+                self.sprite_pix = QPixmap.fromImage(qimg)
+            else:
+                self.sprite_pix = None
         except Exception:
-            self.sprite_img_ref = None
+            self.sprite_pix = None
 
-    def _redraw(self):
-        self.canvas.delete("all")
-        self.canvas.create_text(self.width * 0.25, 28, text="POSE-ALVO", fill=self.colors["muted"], font=("Segoe UI", 11, "bold"))
-        self.canvas.create_text(self.width * 0.75, 28, text="VOCÊ", fill=self.colors["muted"], font=("Segoe UI", 11, "bold"))
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        rect = self.rect()
+        # background
+        p.fillRect(rect, QColor(self.colors.get("card", "#0b1220")))
+        # Header labels
+        p.setPen(QColor(self.colors.get("muted", "#94a3b8")))
+        f = QFont("Segoe UI", 9, QFont.Bold)
+        p.setFont(f)
+        p.drawText(rect.width() * 0.12, 20, "POSE-ALVO")
+        p.drawText(rect.width() * 0.62, 20, "VOCÊ")
 
-        self._draw_sprite_target()
+        # draw sprite target (left)
+        if self.sprite_pix:
+            tx = int(rect.width() * 0.12)
+            ty = int(rect.height() * 0.12)
+            p.drawPixmap(tx, ty, self.sprite_pix)
 
+        # draw skeleton for current pose (right side)
         if not self.last_current_kp:
-            self.canvas.create_text(self.width / 2, self.height / 2, text="Aguardando pose…", fill=self.colors["muted"], font=("Segoe UI", 12))
+            f2 = QFont("Segoe UI", 11)
+            p.setFont(f2)
+            p.setPen(QColor(self.colors.get("muted", "#94a3b8")))
+            p.drawText(rect, Qt.AlignCenter, "Aguardando pose…")
+            p.end()
             return
 
-        cur_norm = _normalize_keypoints(self.last_current_kp, self.width, self.height, side="right")
+        # normalize keypoints to widget coordinates
+        kp_norm = _normalize_keypoints(self.last_current_kp, rect.width(), rect.height(), side="right")
+        if not kp_norm:
+            p.end()
+            return
 
+        # determine highlight bones based on target angles
         highlight_bones = set()
-        conf_ok = 0; total = 0
         if self.target_angles:
             curr = _compute_angles(self.last_current_kp)
             diffs = {}
@@ -354,11 +360,8 @@ class CoachView:
                 a_cur = curr.get(joint)
                 if a_tgt is None or a_cur is None:
                     continue
-                total += 1
                 diff = abs(a_cur - a_tgt)
                 diffs[joint] = diff
-                if diff <= self.tolerance_ok:
-                    conf_ok += 1
                 if diff > self.tolerance_warn:
                     if joint == "l_elbow":
                         highlight_bones.update({(KP["l_shoulder"], KP["l_elbow"]), (KP["l_elbow"], KP["l_wrist"])})
@@ -370,393 +373,600 @@ class CoachView:
                         highlight_bones.update({(KP["r_hip"], KP["r_knee"]), (KP["r_knee"], KP["r_ankle"])})
                     elif joint in ("l_shoulder", "r_shoulder", "trunk_tilt"):
                         highlight_bones.update({(KP["l_shoulder"], KP["r_hip"]), (KP["r_shoulder"], KP["l_hip"]), (KP["l_shoulder"], KP["r_shoulder"])})
+
+        # draw bones
+        for (i, j) in BONES:
+            pi = kp_norm[i] if i < len(kp_norm) else None
+            pj = kp_norm[j] if j < len(kp_norm) else None
+            if not pi or not pj:
+                continue
+            # if too large skip
+            if math.hypot(pi[0] - pj[0], pi[1] - pj[1]) > 800:
+                continue
+            col = QColor(self.colors.get("danger")) if ((i, j) in highlight_bones or (j, i) in highlight_bones) else QColor("#e5e7eb")
+            pen = p.pen()
+            pen.setWidth(3)
+            pen.setColor(col)
+            p.setPen(pen)
+            p.drawLine(int(pi[0]), int(pi[1]), int(pj[0]), int(pj[1]))
+
+        # draw joints
+        for pnt in kp_norm:
+            if not pnt:
+                continue
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#e5e7eb"))
+            p.drawEllipse(int(pnt[0]) - 4, int(pnt[1]) - 4, 8, 8)
+
+        # bottom conformity text if target exists
+        if self.target_angles:
+            curr = _compute_angles(self.last_current_kp)
+            conf_ok = 0; total = 0
+            diffs = {}
+            for joint, a_tgt in self.target_angles.items():
+                a_cur = curr.get(joint)
+                if a_tgt is None or a_cur is None:
+                    continue
+                total += 1
+                diff = abs(a_cur - a_tgt)
+                diffs[joint] = diff
+                if diff <= self.tolerance_ok:
+                    conf_ok += 1
             if total > 0:
                 conf = int(100 * (conf_ok / max(1, total)))
-                txt = [f"Conformidade: {conf}%"]
-                for j, d in sorted(diffs.items(), key=lambda kv: -kv[1])[:3]:
-                    txt.append(f"{j.replace('_',' ').title()}: {d:.0f}°")
-                self.canvas.create_text(self.width / 2, self.height - 16, text="  •  ".join(txt), fill=self.colors["muted"], font=("Segoe UI", 10))
+                bottom_text = f"Conformidade: {conf}%"
+                # top3 diffs
+                items = sorted(diffs.items(), key=lambda kv: -kv[1])[:3]
+                for j, d in items:
+                    bottom_text += f"  •  {j.replace('_',' ').title()}: {d:.0f}°"
+                f3 = QFont("Segoe UI", 9)
+                p.setFont(f3)
+                p.setPen(QColor(self.colors.get("muted", "#94a3b8")))
+                p.drawText(rect.width()/2 - 140, rect.height() - 12, bottom_text)
 
-        self._draw_skeleton(cur_norm, color="#e5e7eb", thickness=3, highlight_bones=highlight_bones)
+        p.end()
 
 
 # ==========================
-# UI Principal
+# Detection worker (QThread + QObject) - roda loop de detecção
 # ==========================
-class PoseDetectionGUI:
+class DetectionWorker(QObject):
+    frame_ready = Signal(object)          # numpy RGB frame
+    annotated_ready = Signal(object)      # numpy BGR annotated (for conversion fallback)
+    messages_ready = Signal(list)
+    keypoints_ready = Signal(object)
+    issue_ready = Signal(object)
+    finished = Signal()
+    fps_signal = Signal(float)
+    res_signal = Signal(str)
+
     def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("AstroPose — Coach de Postura em Microgravidade")
-        self.root.geometry("1180x760")
-        self.root.minsize(1024, 680)
-
-        self.COLORS = {
-            "bg": "#0f172a", "panel": "#111827", "card": "#0b1220",
-            "muted": "#94a3b8", "text": "#e5e7eb", "accent": "#60a5fa",
-            "accent2": "#22d3ee", "danger": "#f87171", "success": "#34d399",
-            "warning": "#fbbf24", "border": "#1f2937",
-        }
-        self._configure_style()
-
-        self.info_text = tk.StringVar(value="Informações:\nNenhuma ação detectada.")
-        self.status_text = tk.StringVar(value="Aguardando início")
-        self.fps_text = tk.StringVar(value="FPS: —")
-        self.res_text = tk.StringVar(value="Res: —")
-        self.mode_text = tk.StringVar(value="Modo: Terra↔Microg (visual)")
-        self.loading_text = "AstroPose"
-        self.letter_index = 0
-        self._animating = False
-
-        # Novas variáveis para cadastro de astronautas
-        self.cadastro_ativo = False
-        self.nome_astronauta = tk.StringVar()
-
-        self.root.configure(bg=self.COLORS["bg"])
-        self.root.grid_rowconfigure(1, weight=1)
-        self.root.grid_columnconfigure(0, weight=3)
-        self.root.grid_columnconfigure(1, weight=2)
-
-        self._build_header()
-        self._build_camera_panel()
-        self._build_sidebar_with_coach()
-        self._build_statusbar()
-
+        super().__init__()
+        self._running = False
         self.pose_detector = None
 
-    def _configure_style(self):
-        style = ttk.Style()
-        try: 
-            style.theme_use("clam")
-        except: 
-            pass
-        style.configure("TFrame", background=self.COLORS["bg"])
-        style.configure("Card.TFrame", background=self.COLORS["card"], borderwidth=1, relief="ridge")
-        style.configure("Panel.TFrame", background=self.COLORS["panel"])
-        style.configure("Header.TLabel", background=self.COLORS["bg"], foreground=self.COLORS["text"], font=("Segoe UI", 18, "bold"))
-        style.configure("Subheader.TLabel", background=self.COLORS["bg"], foreground=self.COLORS["muted"], font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background=self.COLORS["card"], foreground=self.COLORS["text"], font=("Segoe UI", 12, "bold"))
-        style.configure("Body.TLabel", background=self.COLORS["card"], foreground=self.COLORS["text"], font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background=self.COLORS["card"], foreground=self.COLORS["muted"], font=("Segoe UI", 10))
-        style.configure("Status.TLabel", background=self.COLORS["panel"], foreground=self.COLORS["muted"], font=("Segoe UI", 9))
-        style.configure("Accent.TButton", font=("Segoe UI", 11, "bold"), padding=8)
-        style.map("Accent.TButton", background=[("!disabled", self.COLORS["accent"])], foreground=[("!disabled", "#0b1020")])
-        style.configure("Danger.TButton", font=("Segoe UI", 11, "bold"), padding=8)
-        style.map("Danger.TButton", background=[("!disabled", self.COLORS["danger"])], foreground=[("!disabled", "#0b1020")])
-        
-        # Novo estilo para botão de warning
-        style.configure("Warning.TButton", font=("Segoe UI", 11, "bold"), padding=8)
-        style.map("Warning.TButton", background=[("!disabled", self.COLORS["warning"])], 
-                  foreground=[("!disabled", "#0b1020")])
-        
-        style.configure("TNotebook", background=self.COLORS["panel"])
-        style.configure("TNotebook.Tab", padding=(14, 8), font=("Segoe UI", 10, "bold"),
-                        background=self.COLORS["panel"], foreground=self.COLORS["muted"])
-        style.map("TNotebook.Tab", background=[("selected", self.COLORS["card"])], foreground=[("selected", self.COLORS["text"])])
-
-    def _build_header(self):
-        header = ttk.Frame(self.root, style="TFrame")
-        header.grid(row=0, column=0, columnspan=2, sticky="nsew")
-        header.grid_columnconfigure(0, weight=1)
-        header.grid_columnconfigure(1, weight=0)
-        header.grid_columnconfigure(2, weight=0)
-
-        self.title_label = ttk.Label(header, text="AstroPose", style="Header.TLabel")
-        self.title_label.grid(row=0, column=0, sticky="w", padx=20, pady=(14, 4))
-        subtitle = ttk.Label(header, text="Coach de Postura em Microgravidade — Demo (ISS / Fatores Humanos)", style="Subheader.TLabel")
-        subtitle.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 12))
-
-        self.status_pill = tk.Label(header, textvariable=self.status_text, bg=self.COLORS["panel"], fg=self.COLORS["muted"],
-                                    font=("Segoe UI", 10, "bold"), padx=12, pady=6, bd=0, relief="flat")
-        self.status_pill.grid(row=0, column=1, rowspan=2, sticky="e", padx=(0, 12), pady=12)
-
-        self.start_button = ttk.Button(header, text="Iniciar Detecção", style="Accent.TButton", command=self.run_detection)
-        self.start_button.grid(row=0, column=2, rowspan=2, sticky="e", padx=20, pady=12)
-
-    def _build_camera_panel(self):
-        camera_wrap = ttk.Frame(self.root, style="Panel.TFrame")
-        camera_wrap.grid(row=1, column=0, padx=(16, 8), pady=(8, 8), sticky="nsew")
-        camera_wrap.grid_rowconfigure(1, weight=1)
-        camera_wrap.grid_columnconfigure(0, weight=1)
-
-        cam_title = ttk.Label(camera_wrap, text="Visualização da Câmera", style="Title.TLabel")
-        cam_title.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
-
-        cam_card = ttk.Frame(camera_wrap, style="Card.TFrame")
-        cam_card.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        cam_card.grid_rowconfigure(0, weight=1)
-        cam_card.grid_columnconfigure(0, weight=1)
-
-        self.label = tk.Label(cam_card, bg="black", bd=0)
-        self.label.grid(row=0, column=0, sticky="nsew")
-
-        self.loading_label = tk.Label(cam_card, text="", font=("Segoe UI", 36, "bold"),
-                                      fg=self.COLORS["accent2"], bg=self.COLORS["card"])
-
-    def _build_sidebar_with_coach(self):
-        sidebar = ttk.Frame(self.root, style="Panel.TFrame")
-        sidebar.grid(row=1, column=1, padx=(8, 16), pady=(8, 8), sticky="nsew")
-        sidebar.grid_rowconfigure(2, weight=1)
-        sidebar.grid_columnconfigure(0, weight=1)
-
-        side_title = ttk.Label(sidebar, text="Painel de Informações", style="Title.TLabel")
-        side_title.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
-
-        notebook = ttk.Notebook(sidebar)
-        notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-
-        # --- Resumo ---
-        tab_resumo = ttk.Frame(notebook, style="TFrame")
-        notebook.add(tab_resumo, text="Resumo")
-        resumo_card = ttk.Frame(tab_resumo, style="Card.TFrame")
-        resumo_card.pack(fill="both", expand=True)
-        lbl_head = ttk.Label(resumo_card, text="Mensagens / Ações Detectadas", style="Title.TLabel")
-        lbl_head.pack(anchor="w", padx=12, pady=(12, 8))
-        self.info_label = ttk.Label(resumo_card, textvariable=self.info_text, style="Body.TLabel", justify="left", anchor="nw", wraplength=380)
-        self.info_label.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-
-        # --- Coach ---
-        tab_coach = ttk.Frame(notebook, style="TFrame")
-        notebook.add(tab_coach, text="Coach (Boneco)")
-        coach_card = ttk.Frame(tab_coach, style="Card.TFrame")
-        coach_card.pack(fill="both", expand=True)
-        coach_title = ttk.Label(coach_card, text="Pose-alvo vs Você", style="Title.TLabel")
-        coach_title.pack(anchor="w", padx=12, pady=(12, 4))
-
-        btns = ttk.Frame(coach_card, style="TFrame")
-        btns.pack(fill="x", padx=12, pady=(0,8))
-        self.btn_set_target = ttk.Button(btns, text="Definir pose-alvo (agora)", style="Accent.TButton", command=self._set_target_now)
-        self.btn_clear_target = ttk.Button(btns, text="Limpar pose-alvo", style="Danger.TButton", command=self._clear_target)
-        self.btn_set_target.pack(side="left", padx=(0,8))
-        self.btn_clear_target.pack(side="left")
-
-        self.coach_view = CoachView(coach_card, width=380, height=380, colors=self.COLORS)
-
-        # --- Métricas ---
-        tab_metrics = ttk.Frame(notebook, style="TFrame")
-        notebook.add(tab_metrics, text="Métricas")
-        metrics_card = ttk.Frame(tab_metrics, style="Card.TFrame")
-        metrics_card.pack(fill="both", expand=True)
-        m_title = ttk.Label(metrics_card, text="Indicadores (MVP)", style="Title.TLabel")
-        m_title.pack(anchor="w", padx=12, pady=(12, 8))
-        self.metric_conform = ttk.Label(metrics_card, text="Conformidade de postura: —", style="Body.TLabel")
-        self.metric_latency = ttk.Label(metrics_card, text="Latência média (estimada): —", style="Body.TLabel")
-        self.metric_epi = ttk.Label(metrics_card, text="Alertas EPI: —", style="Body.TLabel")
-        self.metric_conform.pack(anchor="w", padx=12, pady=2)
-        self.metric_latency.pack(anchor="w", padx=12, pady=2)
-        self.metric_epi.pack(anchor="w", padx=12, pady=(2, 12))
-
-        note = ttk.Label(metrics_card, text="*Defina uma pose-alvo para ativar a comparação articulada.\n*Ângulos: ombros, cotovelos, joelhos e inclinação do tronco.",
-                         style="Muted.TLabel", wraplength=380, justify="left")
-        note.pack(anchor="w", padx=12, pady=(0, 12))
-
-        # --- Controles de Astronautas ---
-        self._build_astronaut_controls()
-
-        self.close_button = ttk.Button(sidebar, text="Fechar", style="Danger.TButton", command=self.close_window)
-        self.close_button.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
-
-    def _build_astronaut_controls(self):
-        """Adiciona controles para cadastro de astronautas"""
-        astronaut_frame = ttk.Frame(self.root, style="Card.TFrame")
-        astronaut_frame.grid(row=2, column=1, padx=(8, 16), pady=(0, 8), sticky="ew")
-        
-        ttk.Label(astronaut_frame, text="Gerenciar Astronautas", style="Title.TLabel").pack(anchor="w", padx=12, pady=(12, 8))
-        
-        nome_frame = ttk.Frame(astronaut_frame, style="TFrame")
-        nome_frame.pack(fill="x", padx=12, pady=(0, 8))
-        
-        ttk.Label(nome_frame, text="Nome:", style="Body.TLabel").pack(side="left")
-        nome_entry = ttk.Entry(nome_frame, textvariable=self.nome_astronauta)
-        nome_entry.pack(side="left", padx=(8, 0), fill="x", expand=True)
-        
-        btn_frame = ttk.Frame(astronaut_frame, style="TFrame")
-        btn_frame.pack(fill="x", padx=12, pady=(0, 12))
-        
-        ttk.Button(btn_frame, text="Cadastrar", style="Accent.TButton", 
-                  command=self._iniciar_cadastro).pack(side="left", fill="x", expand=True, padx=(0, 4))
-        
-        ttk.Button(btn_frame, text="Capturar", style="Warning.TButton", 
-                  command=self._capturar_cadastro).pack(side="left", fill="x", expand=True, padx=(4, 0))
-
-    def _build_statusbar(self):
-        status = ttk.Frame(self.root, style="Panel.TFrame")
-        status.grid(row=3, column=0, columnspan=2, sticky="ew")
-        for i in range(4): 
-            status.grid_columnconfigure(i, weight=1)
-        ttk.Label(status, textvariable=self.fps_text, style="Status.TLabel").grid(row=0, column=0, sticky="w", padx=16, pady=6)
-        ttk.Label(status, textvariable=self.res_text, style="Status.TLabel").grid(row=0, column=1, sticky="w", padx=16, pady=6)
-        ttk.Label(status, textvariable=self.mode_text, style="Status.TLabel").grid(row=0, column=2, sticky="w", padx=16, pady=6)
-        ttk.Label(status, text="© 2025 AstroPose — Demo", style="Status.TLabel").grid(row=0, column=3, sticky="e", padx=16, pady=6)
-
-    def _iniciar_cadastro(self):
-        """Inicia o modo de cadastro"""
-        nome = self.nome_astronauta.get().strip()
-        if not nome:
-            self.info_text.set("Digite um nome para o astronauta primeiro!")
+    @Slot()
+    def start_worker(self):
+        try:
+            self.pose_detector = PoseDetector()
+        except Exception as e:
+            # emit error message
+            self.messages_ready.emit([f"Erro ao inicializar detector: {e}"])
+            self.finished.emit()
             return
-        
-        if hasattr(self, 'pose_detector') and self.pose_detector:
-            self.pose_detector.iniciar_cadastro_astronauta(nome)
-            self.cadastro_ativo = True
-            self.info_text.set(f"Modo cadastro ativo para {nome}. Posicione o rosto e clique em Capturar.")
 
-    def _capturar_cadastro(self):
-        """Captura o frame atual para cadastro"""
-        if self.cadastro_ativo and hasattr(self, 'pose_detector') and self.pose_detector:
-            ret, frame = self.pose_detector.cap.read()
-            if ret:
-                success = self.pose_detector.finalizar_cadastro_astronauta(frame)
-                if success:
-                    self.info_text.set("Astronauta cadastrado com sucesso!")
-                    self.cadastro_ativo = False
+        self._running = True
+        prev_time = time.time()
+        while self._running:
+            try:
+                result = self.pose_detector.detectar_pose()
+                got_kp = False
+                if isinstance(result, tuple) and len(result) == 3:
+                    mensagens, annotated_frame, keypoints = result
+                    got_kp = True
                 else:
-                    self.info_text.set("Erro ao cadastrar astronauta. Verifique se há um rosto visível.")
+                    mensagens, annotated_frame = result
+                    keypoints = None
 
-    # ... (os demais métodos da classe PoseDetectionGUI permanecem iguais) ...
+                if mensagens:
+                    self.messages_ready.emit(mensagens)
+                else:
+                    self.messages_ready.emit([])
 
+                # annotated_frame may be BGR; convert to RGB for display
+                if annotated_frame is not None:
+                    try:
+                        annotated_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                        self.frame_ready.emit(annotated_rgb)
+                        self.annotated_ready.emit(annotated_frame)
+                        h, w, _ = annotated_rgb.shape
+                        self.res_signal.emit(f"{w}x{h}")
+                    except Exception:
+                        # if conversion fails, emit raw
+                        self.frame_ready.emit(annotated_frame)
+                        self.annotated_ready.emit(annotated_frame)
+
+                if got_kp and keypoints is not None:
+                    self.keypoints_ready.emit(keypoints)
+                else:
+                    # try pose_detector.get_keypoints if available
+                    try:
+                        kp = self.pose_detector.get_keypoints()
+                        if kp:
+                            self.keypoints_ready.emit(kp)
+                    except Exception:
+                        pass
+
+                # issue code
+                try:
+                    if hasattr(self.pose_detector, "get_issue_code"):
+                        self.issue_ready.emit(self.pose_detector.get_issue_code())
+                except Exception:
+                    pass
+
+                # fps
+                now = time.time()
+                dt = now - prev_time
+                prev_time = now
+                if dt > 0:
+                    self.fps_signal.emit(1.0 / dt)
+
+                time.sleep(0.02)
+            except Exception as e:
+                self.messages_ready.emit([f"Erro interno na detecção: {e}"])
+                break
+
+        # cleanup
+        try:
+            if self.pose_detector:
+                self.pose_detector.liberarRecursos()
+        except Exception:
+            pass
+        self.finished.emit()
+
+    def stop(self):
+        self._running = False
+
+
+# ==========================
+# Main Window (integra design + funcionalidades)
+# ==========================
+class AstroPoseMainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("AstroPose — Coach de Postura em Microgravidade (Demo)")
+        self.resize(1200, 760)
+        self.pose_detector = None
+        self.worker_thread = None
+        self.worker = None
+        self.COLORS = {
+            "card": "#0b1220", "muted": "#94a3b8", "danger": "#f87171"
+        }
+        # used state from original
+        self.cadastro_ativo = False
+        self._last_keypoints = None
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(12)
+
+        # Left: Camera
+        cam_group = QGroupBox("Visualização da Câmera")
+        cam_group.setStyleSheet(self._card_style())
+        cam_layout = QVBoxLayout(cam_group)
+        cam_layout.setContentsMargins(10, 12, 10, 10)
+        self.camera_label = QLabel()
+        self.camera_label.setMinimumSize(720, 480)
+        self.camera_label.setStyleSheet("background-color: #000000; border-radius:6px;")
+        self.camera_label.setAlignment(Qt.AlignCenter)
+        cam_layout.addWidget(self.camera_label)
+
+        cam_controls = QHBoxLayout()
+        cam_controls.setSpacing(8)
+        self.btn_start = QPushButton("Iniciar Detecção")
+        self.btn_start.setCursor(Qt.PointingHandCursor)
+        self.btn_start.clicked.connect(self.run_detection)
+        cam_controls.addWidget(self.btn_start)
+
+        self.status_small = QLabel("Aguardando início")
+        self.status_small.setStyleSheet("color: #9aa8bf;")
+        cam_controls.addWidget(self.status_small, alignment=Qt.AlignRight)
+        cam_layout.addLayout(cam_controls)
+
+        main_layout.addWidget(cam_group, stretch=2)
+
+        # Right: segmented + stacked
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        seg_bar = QHBoxLayout()
+        seg_bar.setSpacing(6)
+        self.btn_group = QButtonGroup(self)
+        self.btn_group.setExclusive(True)
+        self.btn_resumo = self._make_segment_button("Resumo", checked=True)
+        self.btn_coach = self._make_segment_button("Coach")
+        self.btn_metricas = self._make_segment_button("Métricas")
+        self.btn_astronautas = self._make_segment_button("Astronautas")
+
+        seg_bar.addWidget(self.btn_resumo)
+        seg_bar.addWidget(self.btn_coach)
+        seg_bar.addWidget(self.btn_metricas)
+        seg_bar.addWidget(self.btn_astronautas)
+        right_layout.addLayout(seg_bar)
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._page_resumo())
+        self.stack.addWidget(self._page_coach())
+        self.stack.addWidget(self._page_metricas())
+        self.stack.addWidget(self._page_astronautas())
+        right_layout.addWidget(self.stack, stretch=1)
+
+        footer_box = QGroupBox()
+        footer_box.setStyleSheet(self._card_style())
+        footer_layout = QVBoxLayout(footer_box)
+        footer_layout.setContentsMargins(10, 8, 10, 8)
+        self.btn_close = QPushButton("Fechar")
+        self.btn_close.clicked.connect(self.close)
+        self.btn_close.setFixedHeight(40)
+        footer_layout.addWidget(self.btn_close)
+        right_layout.addWidget(footer_box)
+
+        main_layout.addWidget(right_panel, stretch=1)
+
+        # connect segmented buttons
+        self.btn_resumo.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        self.btn_coach.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+        self.btn_metricas.clicked.connect(lambda: self.stack.setCurrentIndex(2))
+        self.btn_astronautas.clicked.connect(lambda: self.stack.setCurrentIndex(3))
+
+        # status bar
+        status = QStatusBar()
+        self.setStatusBar(status)
+        self.lbl_fps = QLabel("FPS: —")
+        self.lbl_res = QLabel("Res: —")
+        self.lbl_mode = QLabel("Modo: Terra↔Microg (visual)")
+        status.addPermanentWidget(self.lbl_fps, 1)
+        status.addPermanentWidget(self.lbl_res, 1)
+        status.addPermanentWidget(self.lbl_mode, 1)
+
+        # colors used by CoachCanvas
+        self.COLORS = {
+            "card": "#0b1220", "muted": "#94a3b8", "danger": "#f87171"
+        }
+
+    def _make_segment_button(self, text, checked=False):
+        btn = QPushButton(text)
+        btn.setCheckable(True)
+        btn.setChecked(checked)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedHeight(36)
+        btn.setStyleSheet(self._segment_button_style())
+        self.btn_group.addButton(btn)
+        return btn
+
+    def _page_resumo(self):
+        page = QWidget()
+        l = QVBoxLayout(page)
+        l.setContentsMargins(0, 0, 0, 0)
+
+        box = QGroupBox("Mensagens / Ações Detectadas")
+        box.setStyleSheet(self._card_style())
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(8, 10, 8, 8)
+        self.info_text = QTextEdit()
+        self.info_text.setReadOnly(True)
+        self.info_text.setPlaceholderText("Informações: \nNenhuma ação detectada.")
+        box_layout.addWidget(self.info_text)
+
+        row = QHBoxLayout()
+        self.btn_set_target = QPushButton("Definir pose-alvo (agora)")
+        self.btn_set_target.clicked.connect(self._set_target_now)
+        self.btn_clear_target = QPushButton("Limpar pose-alvo")
+        self.btn_clear_target.clicked.connect(self._clear_target)
+        row.addWidget(self.btn_set_target)
+        row.addWidget(self.btn_clear_target)
+        box_layout.addLayout(row)
+
+        l.addWidget(box)
+        return page
+
+    def _page_coach(self):
+        page = QWidget()
+        l = QVBoxLayout(page)
+        l.setContentsMargins(0, 0, 0, 0)
+
+        box = QGroupBox("Coach — Pose-alvo vs Você")
+        box.setStyleSheet(self._card_style())
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(8, 10, 8, 8)
+
+        self.coach_canvas = CoachCanvas(colors=self.COLORS)
+        box_layout.addWidget(self.coach_canvas)
+
+        btns = QHBoxLayout()
+        self.btn_set_target_coach = QPushButton("Definir Pose-Alvo")
+        self.btn_set_target_coach.clicked.connect(self._set_target_now)
+        self.btn_clear_target_coach = QPushButton("Limpar Pose")
+        self.btn_clear_target_coach.clicked.connect(self._clear_target)
+        btns.addWidget(self.btn_set_target_coach)
+        btns.addWidget(self.btn_clear_target_coach)
+        box_layout.addLayout(btns)
+
+        l.addWidget(box)
+        return page
+
+    def _page_metricas(self):
+        page = QWidget()
+        l = QVBoxLayout(page)
+        l.setContentsMargins(0, 0, 0, 0)
+
+        box = QGroupBox("Indicadores (MVP)")
+        box.setStyleSheet(self._card_style())
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(8, 10, 8, 8)
+
+        self.metric_conform = QLabel("Conformidade de postura: —")
+        self.metric_latency = QLabel("Latência média (estimada): —")
+        self.metric_epi = QLabel("Alertas EPI: —")
+        for w in (self.metric_conform, self.metric_latency, self.metric_epi):
+            w.setStyleSheet("color: #dbe7ff;")
+            box_layout.addWidget(w)
+        box_layout.addStretch(1)
+
+        note = QLabel("*Defina uma pose-alvo para ativar a comparação articulada.\n*Ângulos: ombros, cotovelos, joelhos e inclinação do tronco.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #9aa8bf; font-size: 11px;")
+        box_layout.addWidget(note)
+
+        l.addWidget(box)
+        return page
+
+    def _page_astronautas(self):
+        page = QWidget()
+        l = QVBoxLayout(page)
+        l.setContentsMargins(0, 0, 0, 0)
+
+        box = QGroupBox("Gerenciar Astronautas")
+        box.setStyleSheet(self._card_style())
+        box_layout = QFormLayout(box)
+        box_layout.setContentsMargins(8, 10, 8, 8)
+        self.input_name = QLineEdit()
+        box_layout.addRow("Nome:", self.input_name)
+
+        btn_row = QHBoxLayout()
+        self.btn_register = QPushButton("Cadastrar")
+        self.btn_register.clicked.connect(self._iniciar_cadastro)
+        self.btn_capture = QPushButton("Capturar (usar câmera)")
+        self.btn_capture.clicked.connect(self._capturar_cadastro)
+        btn_row.addWidget(self.btn_register)
+        btn_row.addWidget(self.btn_capture)
+        box_layout.addRow(btn_row)
+
+        l.addWidget(box)
+        return page
+
+    # ----------------- Integration with worker -----------------
+    @Slot()
     def run_detection(self):
-        self._start_title_animation()
-        self.status_text.set("Inicializando...")
-        self.status_pill.configure(bg=self.COLORS["panel"], fg=self.COLORS["warning"])
-        self.loading_label.config(text="")
-        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")
-        self.pose_detector = PoseDetector()
-        threading.Thread(target=self.start_pose_detection, daemon=True).start()
-
-    def _start_title_animation(self):
-        self.letter_index = 0
-        self._animating = True
-        self._animate_title_step()
-        
-    def _animate_title_step(self):
-        if not self._animating: 
+        if self.worker_thread and self.worker:
+            # already running -> stop
+            self._stop_worker()
+            self.btn_start.setText("Iniciar Detecção")
+            self.status_small.setText("Parado")
             return
-        text = self.loading_text[: self.letter_index + 1]
-        self.title_label.config(text=text, foreground=self._next_accent_color())
-        self.letter_index += 1
-        if self.letter_index < len(self.loading_text):
-            self.root.after(120, self._animate_title_step)
-        else:
-            self.root.after(350, lambda: self.title_label.config(foreground=self.COLORS["text"]))
-            self._animating = False
-            
-    def _next_accent_color(self):
-        return [self.COLORS["accent"], self.COLORS["accent2"], self.COLORS["success"], self.COLORS["warning"]][self.letter_index % 4]
 
+        # start the worker thread
+        self.worker = DetectionWorker()
+        self.worker_thread = QThread()
+        self.worker.moveToThread(self.worker_thread)
+
+        # connect signals
+        self.worker.frame_ready.connect(self._on_frame_ready)
+        self.worker.messages_ready.connect(self._on_messages)
+        self.worker.keypoints_ready.connect(self._on_keypoints)
+        self.worker.issue_ready.connect(self._on_issue)
+        self.worker.fps_signal.connect(self._on_fps)
+        self.worker.res_signal.connect(self._on_res)
+        self.worker.finished.connect(self._on_worker_finished)
+
+        self.worker_thread.started.connect(self.worker.start_worker)
+        self.worker_thread.start()
+
+        self.btn_start.setText("Parar Detecção")
+        self.status_small.setText("Inicializando...")
+        self.status_small.setStyleSheet("color: #f4b400;")
+
+    def _stop_worker(self):
+        try:
+            if self.worker:
+                self.worker.stop()
+            if self.worker_thread:
+                self.worker_thread.quit()
+                self.worker_thread.wait(2000)
+        except Exception:
+            pass
+        self.worker = None
+        self.worker_thread = None
+
+    @Slot(object)
+    def _on_frame_ready(self, frame_rgb):
+        # frame_rgb: numpy array H,W,3 (RGB)
+        try:
+            h, w, ch = frame_rgb.shape
+            qimg = QImage(frame_rgb.data, w, h, 3*w, QImage.Format.Format_RGB888)
+            pix = QPixmap.fromImage(qimg).scaled(self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.camera_label.setPixmap(pix)
+            self.lbl_res.setText(f"Res: {w}x{h}")
+        except Exception as e:
+            print("Erro ao desenhar frame:", e)
+
+    @Slot(list)
+    def _on_messages(self, mensagens):
+        if mensagens:
+            self.info_text.setPlainText("\n".join(mensagens))
+        else:
+            # keep previous or clear
+            self.info_text.setPlainText("Nenhuma ação detectada.")
+
+    @Slot(object)
+    def _on_keypoints(self, keypoints):
+        self._last_keypoints = keypoints
+        # update coach canvas
+        try:
+            self.coach_canvas.update_pose(keypoints)
+        except Exception:
+            pass
+
+        # update metrics conform if target exists
+        if self.coach_canvas.target_angles:
+            curr = _compute_angles(keypoints)
+            ok = 0; tot = 0
+            for j, tgt in self.coach_canvas.target_angles.items():
+                a = curr.get(j)
+                if tgt is None or a is None:
+                    continue
+                tot += 1
+                if abs(a - tgt) <= self.coach_canvas.tolerance_ok:
+                    ok += 1
+            if tot > 0:
+                self.metric_conform.setText(f"Conformidade de postura: {int(100*ok/tot)}%")
+
+    @Slot(object)
+    def _on_issue(self, code):
+        try:
+            self.coach_canvas.set_external_issue(code)
+        except Exception:
+            pass
+
+    @Slot(float)
+    def _on_fps(self, f):
+        self.lbl_fps.setText(f"FPS: {f:.1f}")
+
+    @Slot(str)
+    def _on_res(self, s):
+        self.lbl_res.setText(f"Res: {s}")
+
+    @Slot()
+    def _on_worker_finished(self):
+        self.btn_start.setText("Iniciar Detecção")
+        self.status_small.setText("Parado")
+        self._stop_worker()
+
+    # ----------------- original logic methods -----------------
     def _set_target_now(self):
         kp = self._get_keypoints_safe()
         if kp:
-            self.coach_view.set_target_from_current(kp)
-            self.info_text.set("Pose-alvo definida! Faça a tarefa e observe o comparativo.")
+            self.coach_canvas.set_target_from_current(kp)
+            self.info_text.setPlainText("Pose-alvo definida! Faça a tarefa e observe o comparativo.")
         else:
-            self.info_text.set("Não foi possível definir a pose-alvo (sem keypoints no momento).")
+            self.info_text.setPlainText("Não foi possível definir a pose-alvo (sem keypoints no momento).")
 
     def _clear_target(self):
-        self.coach_view.clear_target()
-        self.info_text.set("Pose-alvo limpa.")
+        self.coach_canvas.clear_target()
+        self.info_text.setPlainText("Pose-alvo limpa.")
 
     def _get_keypoints_safe(self):
         try:
-            if hasattr(self.pose_detector, "get_keypoints"):
+            if self.pose_detector and hasattr(self.pose_detector, "get_keypoints"):
                 return self.pose_detector.get_keypoints()
         except Exception:
             pass
         return getattr(self, "_last_keypoints", None)
 
-    def start_pose_detection(self):
-        try:
-            prev_time = time.time()
-            while True:
-                got_kp = False
-                try:
-                    result = self.pose_detector.detectar_pose()
-                    if isinstance(result, tuple) and len(result) == 3:
-                        mensagens, annotated_frame, keypoints = result
-                        self._last_keypoints = keypoints
-                        got_kp = True
-                    else:
-                        mensagens, annotated_frame = result
-                        keypoints = None
-                except ValueError:
-                    mensagens, annotated_frame = self.pose_detector.detectar_pose()
-                    keypoints = None
+    def _iniciar_cadastro(self):
+        nome = self.input_name.text().strip()
+        if not nome:
+            self.info_text.append("Digite um nome para o astronauta primeiro!")
+            return
 
-                if mensagens:
-                    self.info_text.set("\n".join(mensagens))
-                else:
-                    self.info_text.set("Nenhuma ação detectada.")
-
-                kp_use = keypoints if got_kp else self._get_keypoints_safe()
-                if kp_use is not None:
-                    self.coach_view.update_pose(kp_use)
-                    if hasattr(self.pose_detector, "get_issue_code"):
-                        self.coach_view.set_external_issue(self.pose_detector.get_issue_code())
-
-                    if self.coach_view.target_angles:
-                        curr = _compute_angles(kp_use)
-                        ok = 0
-                        tot = 0
-                        for j, tgt in self.coach_view.target_angles.items():
-                            a = curr.get(j)
-                            if tgt is None or a is None:
-                                continue
-                            tot += 1
-                            if abs(a - tgt) <= self.coach_view.tolerance_ok:
-                                ok += 1
-                        if tot > 0:
-                            self.metric_conform.config(text=f"Conformidade de postura: {int(100*ok/tot)}%")
-
-                annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                h, w, _ = annotated_frame_rgb.shape
-                self.res_text.set(f"Res: {w}x{h}")
-                img = Image.fromarray(annotated_frame_rgb)
-                target_w = max(640, self.label.winfo_width() or 640)
-                target_h = max(360, self.label.winfo_height() or 360)
-                img = img.resize((target_w, target_h))
-                imgtk = ImageTk.PhotoImage(image=img)
-                self.label.imgtk = imgtk
-                self.label.configure(image=imgtk)
-
-                now = time.time()
-                dt = now - prev_time
-                prev_time = now
-                if dt > 0: 
-                    self.fps_text.set(f"FPS: {1.0/dt:.1f}")
-
-                self.status_text.set("Detectando...")
-                self.status_pill.configure(bg=self.COLORS["panel"], fg=self.COLORS["success"])
-                self.loading_label.place_forget()
-
-                time.sleep(0.02)
-                self.root.update()
-
-        except Exception as e:
+        # try to call pose_detector method if available
+        if self.worker and self.worker.pose_detector:
             try:
-                if self.pose_detector: 
-                    self.pose_detector.liberarRecursos()
+                self.worker.pose_detector.iniciar_cadastro_astronauta(nome)
+                self.cadastro_ativo = True
+                self.info_text.append(f"Modo cadastro ativo para {nome}. Posicione o rosto e clique em Capturar.")
+                return
             except Exception:
                 pass
-            self.loading_label.place_forget()
-            self.status_text.set("Erro na detecção")
-            self.status_pill.configure(bg=self.COLORS["panel"], fg=self.COLORS["danger"])
-            self.info_text.set("Erro na detecção: " + str(e))
 
-    def close_window(self):
-        try:
-            if self.pose_detector: 
-                self.pose_detector.liberarRecursos()
-        except Exception:
-            pass
-        self.root.quit()
-        self.root.destroy()
+        self.info_text.append("Detector não disponível para cadastro (ainda).")
 
-    def run(self):
-        self.root.mainloop()
+    def _capturar_cadastro(self):
+        if self.cadastro_ativo:
+            # try finalize via pose_detector
+            if self.worker and self.worker.pose_detector:
+                try:
+                    ret, frame = self.worker.pose_detector.cap.read()
+                    if ret:
+                        success = self.worker.pose_detector.finalizar_cadastro_astronauta(frame)
+                        if success:
+                            self.info_text.append("Astronauta cadastrado com sucesso!")
+                            self.cadastro_ativo = False
+                        else:
+                            self.info_text.append("Erro ao cadastrar astronauta. Verifique se há um rosto visível.")
+                        return
+                except Exception:
+                    pass
+            self.info_text.append("Não foi possível acessar a câmera para captura.")
 
-# ---------- Entry point ----------
+    # ----------------- styles -----------------
+    def _card_style(self):
+        return """
+        QGroupBox {
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 8px;
+            margin-top: 6px;
+            padding-top: 10px;
+        }
+        QGroupBox:title {
+            subcontrol-origin: margin;
+            left: 12px;
+            padding: 0 3px 0 3px;
+            color: #dbe7ff;
+            font-weight: bold;
+        }
+        """
+
+    def _segment_button_style(self):
+        return """
+        QPushButton {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.04);
+            border-radius: 8px;
+            padding: 6px 12px;
+            color: #cfe6ff;
+            font-weight: 600;
+        }
+        QPushButton:checked {
+            background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #1e88e5, stop:1 #0ea5e9);
+            color: white;
+            border: none;
+        }
+        QPushButton:hover {
+            background: rgba(255,255,255,0.02);
+        }
+        """
+
+    def closeEvent(self, ev):
+        # ensure worker stops
+        self._stop_worker()
+        super().closeEvent(ev)
+
+
 def main():
-    gui = PoseDetectionGUI()
-    gui.run()
+    app = QApplication(sys.argv)
+    qt_material.apply_stylesheet(app, theme="dark_blue.xml")
+    win = AstroPoseMainWindow()
+    win.show()
+    sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
