@@ -1,25 +1,25 @@
-# astropose_pyside.py
+# Interface.py (arquivo completo e independente)
 import os
 import sys
 import math
 import time
-import threading
 
-from PySide6.QtCore import (Qt, QThread, QObject, Signal, Slot, QSize, QRectF)
+from PySide6.QtCore import (Qt, QThread, QObject, Signal, Slot)
 from PySide6.QtGui import (QPainter, QColor, QFont, QImage, QPixmap)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QPushButton, QTextEdit, QStackedWidget, QLineEdit, QGroupBox, QFormLayout,
-    QFrame, QStatusBar, QButtonGroup, QSizePolicy
+    QStatusBar, QButtonGroup, QComboBox, QSpinBox, QCheckBox
 )
 import qt_material
 from PIL import Image
 import numpy as np
 import cv2
 
-# Import PoseDetector (mesmo que no seu código original)
+# Import do detector otimizado (detector.py fornecido anteriormente)
 from detector import PoseDetector
 
+# ---------------- constants / maps ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPRITE_DIR = os.path.join(BASE_DIR, "img")
 SPRITE_MAP = {
@@ -55,6 +55,7 @@ JOINTS_FOR_ANGLES = {
     "r_shoulder": (KP["r_elbow"], KP["r_shoulder"], KP["r_hip"]),
 }
 
+# ---------------- utility functions ----------------
 def _angle(a, b, c):
     try:
         ax, ay = a[:2]; bx, by = b[:2]; cx, cy = c[:2]
@@ -174,10 +175,7 @@ def _choose_sprite_auto(kp):
     except Exception:
         return "Neutro"
 
-
-# ==========================
-# CoachCanvas (QWidget) - versão PySide6 do CoachView
-# ==========================
+# ---------------- CoachCanvas (QWidget) ----------------
 class CoachCanvas(QWidget):
     def __init__(self, colors=None, parent=None):
         super().__init__(parent)
@@ -426,13 +424,12 @@ class CoachCanvas(QWidget):
 
         p.end()
 
-
 # ==========================
-# Detection worker (QThread + QObject) - roda loop de detecção
+# Detection worker (QThread + QObject)
 # ==========================
 class DetectionWorker(QObject):
     frame_ready = Signal(object)          # numpy RGB frame
-    annotated_ready = Signal(object)      # numpy BGR annotated (for conversion fallback)
+    annotated_ready = Signal(object)      # numpy BGR annotated (para fallback)
     messages_ready = Signal(list)
     keypoints_ready = Signal(object)
     issue_ready = Signal(object)
@@ -440,17 +437,27 @@ class DetectionWorker(QObject):
     fps_signal = Signal(float)
     res_signal = Signal(str)
 
-    def __init__(self):
+    def __init__(self, config=None):
         super().__init__()
         self._running = False
         self.pose_detector = None
+        self.config = config or {}
 
     @Slot()
     def start_worker(self):
         try:
-            self.pose_detector = PoseDetector()
+            # criar detector com configurações fornecidas
+            self.pose_detector = PoseDetector(
+                camera_index=self.config.get("camera_index", 0),
+                model_path=self.config.get("model_path", "yolov8n-pose.pt"),
+                width=self.config.get("width", 640),
+                height=self.config.get("height", 480),
+                frame_interval_ms=self.config.get("frame_interval_ms", 100),
+                draw_annotations=self.config.get("draw_annotations", False),
+                force_cpu=self.config.get("force_cpu", False),
+                face_recognition_enabled=self.config.get("face_recognition_enabled", True),
+            )
         except Exception as e:
-            # emit error message
             self.messages_ready.emit([f"Erro ao inicializar detector: {e}"])
             self.finished.emit()
             return
@@ -482,14 +489,12 @@ class DetectionWorker(QObject):
                         h, w, _ = annotated_rgb.shape
                         self.res_signal.emit(f"{w}x{h}")
                     except Exception:
-                        # if conversion fails, emit raw
                         self.frame_ready.emit(annotated_frame)
                         self.annotated_ready.emit(annotated_frame)
 
                 if got_kp and keypoints is not None:
                     self.keypoints_ready.emit(keypoints)
                 else:
-                    # try pose_detector.get_keypoints if available
                     try:
                         kp = self.pose_detector.get_keypoints()
                         if kp:
@@ -511,7 +516,7 @@ class DetectionWorker(QObject):
                 if dt > 0:
                     self.fps_signal.emit(1.0 / dt)
 
-                time.sleep(0.02)
+                time.sleep(0.01)
             except Exception as e:
                 self.messages_ready.emit([f"Erro interno na detecção: {e}"])
                 break
@@ -527,14 +532,13 @@ class DetectionWorker(QObject):
     def stop(self):
         self._running = False
 
-
 # ==========================
-# Main Window (integra design + funcionalidades)
+# Main Window
 # ==========================
 class AstroPoseMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AstroPose — Coach de Postura em Microgravidade (Demo)")
+        self.setWindowTitle("AstroPose — Coach de Postura (Demo)")
         self.resize(1200, 760)
         self.pose_detector = None
         self.worker_thread = None
@@ -542,7 +546,6 @@ class AstroPoseMainWindow(QMainWindow):
         self.COLORS = {
             "card": "#0b1220", "muted": "#94a3b8", "danger": "#f87171"
         }
-        # used state from original
         self.cadastro_ativo = False
         self._last_keypoints = None
 
@@ -566,6 +569,35 @@ class AstroPoseMainWindow(QMainWindow):
         self.camera_label.setAlignment(Qt.AlignCenter)
         cam_layout.addWidget(self.camera_label)
 
+        # ----------------- CONFIG CONTROLS -----------------
+        config_row = QHBoxLayout()
+        config_row.setSpacing(8)
+
+        self.combo_res = QComboBox()
+        self.combo_res.addItems(["640x480", "1280x720", "320x240"])
+        self.combo_res.setCurrentText("640x480")
+        config_row.addWidget(self.combo_res)
+
+        self.spin_interval = QSpinBox()
+        self.spin_interval.setRange(10, 2000)
+        self.spin_interval.setValue(100)
+        self.spin_interval.setSuffix(" ms")
+        config_row.addWidget(self.spin_interval)
+
+        self.chk_annotations = QCheckBox("Desenhar anotações")
+        self.chk_annotations.setChecked(False)
+        config_row.addWidget(self.chk_annotations)
+
+        self.chk_force_cpu = QCheckBox("Forçar CPU")
+        self.chk_force_cpu.setChecked(False)
+        config_row.addWidget(self.chk_force_cpu)
+
+        self.input_model = QLineEdit("yolov8n-pose.pt")
+        self.input_model.setMaximumWidth(180)
+        config_row.addWidget(self.input_model)
+
+        cam_layout.addLayout(config_row)
+
         cam_controls = QHBoxLayout()
         cam_controls.setSpacing(8)
         self.btn_start = QPushButton("Iniciar Detecção")
@@ -588,8 +620,7 @@ class AstroPoseMainWindow(QMainWindow):
 
         seg_bar = QHBoxLayout()
         seg_bar.setSpacing(6)
-        self.btn_group = QButtonGroup(self)
-        self.btn_group.setExclusive(True)
+        # btn_group será criado por _make_segment_button caso não exista
         self.btn_resumo = self._make_segment_button("Resumo", checked=True)
         self.btn_coach = self._make_segment_button("Coach")
         self.btn_metricas = self._make_segment_button("Métricas")
@@ -636,21 +667,7 @@ class AstroPoseMainWindow(QMainWindow):
         status.addPermanentWidget(self.lbl_res, 1)
         status.addPermanentWidget(self.lbl_mode, 1)
 
-        # colors used by CoachCanvas
-        self.COLORS = {
-            "card": "#0b1220", "muted": "#94a3b8", "danger": "#f87171"
-        }
-
-    def _make_segment_button(self, text, checked=False):
-        btn = QPushButton(text)
-        btn.setCheckable(True)
-        btn.setChecked(checked)
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.setFixedHeight(36)
-        btn.setStyleSheet(self._segment_button_style())
-        self.btn_group.addButton(btn)
-        return btn
-
+    # ----------------- pages -----------------
     def _page_resumo(self):
         page = QWidget()
         l = QVBoxLayout(page)
@@ -752,6 +769,40 @@ class AstroPoseMainWindow(QMainWindow):
         l.addWidget(box)
         return page
 
+    # ----------------- Helpers -----------------
+    def _make_segment_button(self, text, checked=False):
+        btn = QPushButton(text)
+        btn.setCheckable(True)
+        btn.setChecked(checked)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedHeight(36)
+        btn.setStyleSheet(self._segment_button_style())
+        # Garantir que btn_group exista (cria se necessário)
+        try:
+            bg = getattr(self, "btn_group", None)
+            if bg is None:
+                self.btn_group = QButtonGroup(self)
+                self.btn_group.setExclusive(True)
+            self.btn_group.addButton(btn)
+        except Exception:
+            pass
+        return btn
+
+    def _gather_settings(self):
+        res_text = self.combo_res.currentText()
+        w, h = map(int, res_text.split("x"))
+        cfg = {
+            "width": w,
+            "height": h,
+            "frame_interval_ms": int(self.spin_interval.value()),
+            "draw_annotations": bool(self.chk_annotations.isChecked()),
+            "force_cpu": bool(self.chk_force_cpu.isChecked()),
+            "model_path": self.input_model.text().strip() or "yolov8n-pose.pt",
+            "camera_index": 0,
+            "face_recognition_enabled": True,
+        }
+        return cfg
+
     # ----------------- Integration with worker -----------------
     @Slot()
     def run_detection(self):
@@ -762,8 +813,9 @@ class AstroPoseMainWindow(QMainWindow):
             self.status_small.setText("Parado")
             return
 
-        # start the worker thread
-        self.worker = DetectionWorker()
+        # start the worker thread with configuration
+        cfg = self._gather_settings()
+        self.worker = DetectionWorker(config=cfg)
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
 
@@ -797,11 +849,14 @@ class AstroPoseMainWindow(QMainWindow):
 
     @Slot(object)
     def _on_frame_ready(self, frame_rgb):
-        # frame_rgb: numpy array H,W,3 (RGB)
         try:
             h, w, ch = frame_rgb.shape
             qimg = QImage(frame_rgb.data, w, h, 3*w, QImage.Format.Format_RGB888)
-            pix = QPixmap.fromImage(qimg).scaled(self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pix = QPixmap.fromImage(qimg).scaled(
+                self.camera_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.FastTransformation
+            )
             self.camera_label.setPixmap(pix)
             self.lbl_res.setText(f"Res: {w}x{h}")
         except Exception as e:
@@ -812,19 +867,16 @@ class AstroPoseMainWindow(QMainWindow):
         if mensagens:
             self.info_text.setPlainText("\n".join(mensagens))
         else:
-            # keep previous or clear
             self.info_text.setPlainText("Nenhuma ação detectada.")
 
     @Slot(object)
     def _on_keypoints(self, keypoints):
         self._last_keypoints = keypoints
-        # update coach canvas
         try:
             self.coach_canvas.update_pose(keypoints)
         except Exception:
             pass
 
-        # update metrics conform if target exists
         if self.coach_canvas.target_angles:
             curr = _compute_angles(keypoints)
             ok = 0; tot = 0
@@ -874,8 +926,8 @@ class AstroPoseMainWindow(QMainWindow):
 
     def _get_keypoints_safe(self):
         try:
-            if self.pose_detector and hasattr(self.pose_detector, "get_keypoints"):
-                return self.pose_detector.get_keypoints()
+            if self.worker and self.worker.pose_detector and hasattr(self.worker.pose_detector, "get_keypoints"):
+                return self.worker.pose_detector.get_keypoints()
         except Exception:
             pass
         return getattr(self, "_last_keypoints", None)
@@ -886,7 +938,6 @@ class AstroPoseMainWindow(QMainWindow):
             self.info_text.append("Digite um nome para o astronauta primeiro!")
             return
 
-        # try to call pose_detector method if available
         if self.worker and self.worker.pose_detector:
             try:
                 self.worker.pose_detector.iniciar_cadastro_astronauta(nome)
@@ -900,7 +951,6 @@ class AstroPoseMainWindow(QMainWindow):
 
     def _capturar_cadastro(self):
         if self.cadastro_ativo:
-            # try finalize via pose_detector
             if self.worker and self.worker.pose_detector:
                 try:
                     ret, frame = self.worker.pose_detector.cap.read()
@@ -955,18 +1005,18 @@ class AstroPoseMainWindow(QMainWindow):
         """
 
     def closeEvent(self, ev):
-        # ensure worker stops
         self._stop_worker()
         super().closeEvent(ev)
 
-
 def main():
     app = QApplication(sys.argv)
-    qt_material.apply_stylesheet(app, theme="dark_blue.xml")
+    try:
+        qt_material.apply_stylesheet(app, theme="dark_blue.xml")
+    except Exception:
+        pass
     win = AstroPoseMainWindow()
     win.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

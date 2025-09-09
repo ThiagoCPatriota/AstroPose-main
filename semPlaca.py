@@ -1,77 +1,79 @@
 import tkinter as tk
 import cv2
-from ultralytics import YOLO
-from classes.inclinacaoFrontal import inclinacaoFrontal
-from classes.alinhamentoOmbros import alinhamentoOmbros
-from classes.agachamento import Agachamento  
+from detector import PoseDetector
 from tkinter import messagebox
 
+# Interface simples pra rodar detecções em modo "sem placa" usando PoseDetector otimizado
 
-# Carregar o modelo de detecção de pose do YOLOv8
-model = YOLO('yolov8n-pose.pt')
+detector = None
 
-# Variável global para capturar o vídeo da webcam
-cap = None
-
-def iniciar_camera():
-    global cap
-    cap = cv2.VideoCapture(0)  # Pode mudar o índice se houver mais de uma câmera
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+def iniciar_camera_e_detector(model_path="yolov8n-pose.pt", width=640, height=480, interval_ms=150, force_cpu=True):
+    global detector
+    # inicializa detector com configurações mais leves
+    detector = PoseDetector(
+        camera_index=0,
+        model_path=model_path,
+        width=width,
+        height=height,
+        frame_interval_ms=interval_ms,
+        draw_annotations=False,
+        force_cpu=force_cpu,
+        face_recognition_enabled=False,
+    )
 
 def liberar_camera():
-    global cap
-    if cap is not None:
-        cap.release()
-        cap = None
+    global detector
+    if detector:
+        detector.liberarRecursos()
+        detector = None
 
-def IniciarDetecFront():
-    liberar_camera()
-    iniciar_camera()
-    
-    if not cap or not cap.isOpened():
-        messagebox.showerror("Erro", "Erro ao acessar a webcam.")
+def _loop_detect(tipo):
+    # Apenas um loop de demonstração que chama detectar_pose até o usuário parar a janela
+    global detector
+    if not detector:
+        messagebox.showerror("Erro", "Detector não inicializado.")
         return
 
-    inclinacaoFrontal.detectar(cap, model)
-    liberar_camera()  # Liberar a câmera após a detecção
+    try:
+        while True:
+            mensagens, annotated_frame, keypoints = detector.detectar_pose()
+            # mostramos janela com frame anotado (redimensionado)
+            if annotated_frame is not None:
+                cv2.imshow(f"Detecção - {tipo}", annotated_frame)
+            if mensagens:
+                print("Mensagens:", mensagens)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    except Exception as e:
+        print("Erro no loop de detecção:", e)
+    finally:
+        cv2.destroyAllWindows()
 
-def IniciarDetecOmbros():
+def IniciarDetecPadrao():
     liberar_camera()
-    iniciar_camera()
-
-    if not cap or not cap.isOpened():
-        messagebox.showerror("Erro", "Erro ao acessar a webcam.")
-        return
-
-    alinhamentoOmbros.iniciar_detecao(cap, model)
-    liberar_camera()  # Liberar a câmera após a detecção
-
-def IniciarDetecAgachamento():
+    iniciar_camera_e_detector(model_path="yolov8n-pose.pt", width=640, height=480, interval_ms=150, force_cpu=True)
+    _loop_detect("Padrão")
     liberar_camera()
-    iniciar_camera()
 
-    if not cap or not cap.isOpened():
-        messagebox.showerror("Erro", "Erro ao acessar a webcam.")
-        return
+def IniciarDetecRapida():
+    liberar_camera()
+    # resolução menor e intervalo maior -> mais fps
+    iniciar_camera_e_detector(model_path="yolov8n-pose.pt", width=320, height=240, interval_ms=80, force_cpu=True)
+    _loop_detect("Rápida")
+    liberar_camera()
 
-    Agachamento.detectar(cap, model)  
-    liberar_camera()  
-
-# Configurar a interface gráfica
+# Configurar a interface gráfica básica
 root = tk.Tk()
-root.title("Detecção de Pose com YOLOv8")
-root.geometry("300x150")
+root.title("Detecção de Pose (Modo Sem Placa)")
+root.geometry("320x160")
 
-# Adicionar os botões
-start_button = tk.Button(root, text="Detectar Inclinação Frontal", command=IniciarDetecFront)
+start_button = tk.Button(root, text="Iniciar (padrão)", command=IniciarDetecPadrao)
 start_button.pack(pady=10)
 
-start_button2 = tk.Button(root, text="Detectar Alinhamento de Ombros", command=IniciarDetecOmbros)
+start_button2 = tk.Button(root, text="Iniciar rápida (menor)", command=IniciarDetecRapida)
 start_button2.pack(pady=10)
 
-start_button3 = tk.Button(root, text="Detectar Agachamento", command=IniciarDetecAgachamento)
-start_button3.pack(pady=10)
+close_button = tk.Button(root, text="Fechar", command=lambda: (liberar_camera(), root.destroy()))
+close_button.pack(pady=10)
 
-# Iniciar a interface gráfica
 root.mainloop()
