@@ -106,8 +106,15 @@ class ReconhecimentoFacial:
         """Reconhece rostos no frame e retorna nomes e coordenadas"""
         if not self.known_face_encodings:
             return []
-            
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+
+        h, w = frame.shape[:2]
+        scale = 1.0
+        if w >= 1920:
+            scale = 0.25
+        elif w >= 1280:
+            scale = 0.5
+
+        small_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         
         face_locations = face_recognition.face_locations(rgb_small_frame)
@@ -130,10 +137,13 @@ class ReconhecimentoFacial:
                 
                 if matches[best_match_index] and confidence > 0.6:
                     name = self.known_face_names[best_match_index]
-            
+
             top, right, bottom, left = face_location
-            top *= 4; right *= 4; bottom *= 4; left *= 4
-            
+            top = int(top / scale)
+            right = int(right / scale)
+            bottom = int(bottom / scale)
+            left = int(left / scale)
+
             face_names.append(name)
             face_coords.append((left, top, right, bottom))
             face_confidences.append(confidence)
