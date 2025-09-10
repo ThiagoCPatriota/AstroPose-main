@@ -207,8 +207,10 @@ class PoseDetector:
 
         res0 = results[0]
 
-        # parse detections sem usar res0.plot() (muito mais rápido)
-        annotated_frame = frame.copy()  # desenharemos apenas o necessário
+        if(self.draw_annotations):
+            annotated_frame = res0.plot()
+        else:
+            annotated_frame = frame.copy()
         mensagens = []
 
         # ---------- Reconhecimento Facial (mantido, mas só se ativado) ----------
@@ -267,18 +269,6 @@ class PoseDetector:
             # escolher keypoints da pessoa principal
             kp0 = [(float(x), float(y), float(c)) for (x, y, c) in kp_scaled_all[idx_max]]
             self._last_keypoints_ui = kp0
-
-            # desenhar sobre annotated_frame somente se draw_annotations True (opcional)
-            if self.draw_annotations:
-                # desenhar caixa maior e pontos básicos para cada pessoa (apenas para economia)
-                for i in range(n):
-                    box = xyxy_all[i]
-                    x1, y1, x2, y2 = int(box[0] * scale_x), int(box[1] * scale_y), int(box[2] * scale_x), int(box[3] * scale_y)
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    # desenhar pontos da pessoa i (somente pontos com confiança razoável)
-                    for (x, y), c in zip(xy_all[i], conf_all[i]):
-                        if c > 0.3:
-                            cv2.circle(annotated_frame, (int(x * scale_x), int(y * scale_y)), 3, (255, 255, 255), -1)
 
             # Agora executamos as verificações originais de postura para cada pessoa (otimizando try/except)
             for i in range(n):
