@@ -17,7 +17,7 @@ import numpy as np
 import cv2
 
 # Import do detector otimizado (detector.py fornecido anteriormente)
-from detector import PoseDetector
+from detector import PoseDetector, listar_resolucoes_suportadas
 
 # ---------------- constants / maps ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -550,6 +550,33 @@ class AstroPoseMainWindow(QMainWindow):
         self._last_keypoints = None
 
         self._setup_ui()
+        self._popular_resolucoes()
+        self.combo_res.currentIndexChanged.connect(self._on_resolution_change)
+
+    def _popular_resolucoes(self):
+        resolucoes = listar_resolucoes_suportadas(0)  # índice da webcam
+        self.combo_res.clear()
+        for w, h in resolucoes:
+            self.combo_res.addItem(f"{w}x{h}", (w, h))
+
+    def _on_resolution_change(self, index):
+        if index >= 0:
+            w, h = self.combo_res.itemData(index)
+            if self.worker and self.worker.pose_detector:
+                # Atualiza atributos
+                self.worker.pose_detector.width = w
+                self.worker.pose_detector.height = h
+                # Aplica na câmera
+                cap = self.worker.pose_detector.cap
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+
+                # Confirmação
+                atual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                atual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                self.info_text.append(
+                    f"Resolução solicitada {w}x{h}, em uso {atual_w}x{atual_h}"
+                )
 
     def _setup_ui(self):
         central = QWidget()
@@ -574,8 +601,6 @@ class AstroPoseMainWindow(QMainWindow):
         config_row.setSpacing(8)
 
         self.combo_res = QComboBox()
-        self.combo_res.addItems(["640x480", "1280x720", "320x240"])
-        self.combo_res.setCurrentText("640x480")
         config_row.addWidget(self.combo_res)
 
         self.spin_interval = QSpinBox()

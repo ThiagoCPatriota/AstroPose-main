@@ -12,6 +12,31 @@ def _to_np(x):
         return x.detach().cpu().numpy()
     return np.asarray(x)
 
+def listar_resolucoes_suportadas(camera_index=0):
+    """Tenta aplicar resoluções comuns e retorna apenas as suportadas pela câmera"""
+    common_resolutions = [
+        (640, 480),
+        (800, 600),
+        (1024, 768),
+        (1280, 720),
+        (1600, 1200),
+        (1920, 1080),
+        (2560, 1440),
+        (3840, 2160),
+    ]
+
+    cap = cv2.VideoCapture(camera_index)
+    supported = []
+    for w, h in common_resolutions:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if (actual_w, actual_h) == (w, h):
+            supported.append((w, h))
+    cap.release()
+    return supported
+
 class PoseDetector:
     """
     PoseDetector otimizado:
