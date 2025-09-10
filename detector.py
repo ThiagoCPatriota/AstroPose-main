@@ -81,9 +81,30 @@ class PoseDetector:
 
         # Face recognizer (heavy) - keep but can be disabled
         self.face_recognizer = ReconhecimentoFacial() if self.face_recognition_enabled else None
+        self.cadastro_ativo = False
+        self.nome_cadastro = None
 
         if not self.cap.isOpened():
             raise Exception("Erro ao acessar a webcam.")
+
+    def iniciar_cadastro_astronauta(self, nome=None):
+        self.cadastro_ativo = True
+        self.nome_cadastro = nome
+
+    def finalizar_cadastro_astronauta(self, frame):
+        if getattr(self, "cadastro_ativo", False):
+            if self.face_recognizer:
+                try:
+                    success = self.face_recognizer.cadastrar_astronauta(frame, self.nome_cadastro)
+                    self.cadastro_ativo = False
+                    self.nome_cadastro = None
+                    return success
+                except Exception as e:
+                    print(f"Erro ao cadastrar astronauta: {e}")
+                    self.cadastro_ativo = False
+                    self.nome_cadastro = None
+                    return False
+        return False
 
     def set_resolution(self, width, height):
         self.width = int(width)
@@ -380,6 +401,17 @@ class PoseDetector:
         else:
             self._last_keypoints_ui = None
             self._last_issue_code = "OK"
+
+        if getattr(self, "cadastro_ativo", False):
+            cv2.putText(
+                annotated_frame,
+                "MODO CADASTRO - Posicione o rosto",
+                (50, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 255),  # amarelo
+                2
+            )
 
         # cache result and atualizar timer
         result = (mensagens, annotated_frame, self._last_keypoints_ui)
