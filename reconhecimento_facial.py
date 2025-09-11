@@ -1,164 +1,87 @@
-import cv2
-import face_recognition
-import numpy as np
 import os
 import pickle
-from datetime import datetime
-import tkinter as tk
-from tkinter import simpledialog, messagebox
+import cv2
+import numpy as np
+from insightface.app import FaceAnalysis
 
 class ReconhecimentoFacial:
-    def __init__(self):
-        self.known_face_encodings = []
+    def __init__(self, model_name="buffalo_l", det_size=(640,640)):
+        self.known_face_embeddings = []
         self.known_face_names = []
-        self.known_face_images = []
-        self.load_known_faces()
-        
-    def load_known_faces(self):
-        """Carrega rostos conhecidos do diretório 'astronautas/'"""
-        astronaut_dir = "astronautas"
-        if not os.path.exists(astronaut_dir):
-            os.makedirs(astronaut_dir)
-            return
-            
-        encodings_file = os.path.join(astronaut_dir, "encodings.pkl")
-        if os.path.exists(encodings_file):
-            try:
-                with open(encodings_file, 'rb') as f:
-                    data = pickle.load(f)
-                    self.known_face_encodings = data['encodings']
-                    self.known_face_names = data['names']
-                    print(f"Carregados {len(self.known_face_names)} astronautas cadastrados")
-            except:
-                print("Erro ao carregar encodings, recriando...")
-                self._create_encodings_from_images(astronaut_dir)
-        else:
-            self._create_encodings_from_images(astronaut_dir)
-    
-    def _create_encodings_from_images(self, astronaut_dir):
-        """Cria encodings a partir das imagens no diretório"""
-        for filename in os.listdir(astronaut_dir):
-            if filename.endswith(('.jpg', '.jpeg', '.png')) and filename != "encodings.pkl":
-                image_path = os.path.join(astronaut_dir, filename)
-                image = face_recognition.load_image_file(image_path)
-                
-                encodings = face_recognition.face_encodings(image)
-                if encodings:
-                    self.known_face_encodings.append(encodings[0])
-                    nome = os.path.splitext(filename)[0].replace('_', ' ')
-                    self.known_face_names.append(nome)
-                    self.known_face_images.append(image)
-                    print(f"Carregado: {nome}")
-        
-        self._save_encodings()
-    
-    def _save_encodings(self):
-        """Salva os encodings em arquivo pickle"""
-        astronaut_dir = "astronautas"
-        encodings_file = os.path.join(astronaut_dir, "encodings.pkl")
-        
-        data = {
-            'encodings': self.known_face_encodings,
-            'names': self.known_face_names
-        }
-        
-        with open(encodings_file, 'wb') as f:
-            pickle.dump(data, f)
 
-    def cadastrar_astronauta(self, frame, nome=None):
+        # inicializa o modelo do InsightFace
+        self.app = FaceAnalysis(name=model_name, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+        self.app.prepare(ctx_id=0, det_size=det_size)
+
+        self.load_known_faces()
+
+    def load_known_faces(self):
+        astronaut_dir = "astronautas"
+        enc_file = os.path.join(astronaut_dir, "encodings.pkl")
+        if os.path.exists(enc_file):
+            with open(enc_file, "rb") as f:
+                data = pickle.load(f)
+                self.known_face_embeddings = data["embeddings"]
+                self.known_face_names = data["names"]
+                print(f"Carregados {len(self.known_face_names)} astronautas")
+        else:
+            print("Nenhum cadastro encontrado.")
+
+    def _save_encodings(self):
+        astronaut_dir = "astronautas"
+        os.makedirs(astronaut_dir, exist_ok=True)
+        enc_file = os.path.join(astronaut_dir, "encodings.pkl")
+        with open(enc_file, "wb") as f:
+            pickle.dump({
+                "embeddings": self.known_face_embeddings,
+                "names": self.known_face_names
+            }, f)
+
+    def cadastrar_astronauta(self, frame, nome):
         if not nome:
-            # Retorna uma mensagem de erro se o nome estiver vazio
             return False, "Nome não fornecido."
 
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-        rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-        face_locations = face_recognition.face_locations(rgb_frame)
+        faces = self.app.get(frame)
+        if len(faces) != 1:
+            return False, "Precisa exatamente de 1 rosto visível para cadastro."
 
-        if not face_locations:
-            # Retorna erro se nenhum rosto for detectado
-            return False, "Nenhum rosto detectado na imagem!"
-
-        if len(face_locations) > 1:
-            # Retorna erro se múltiplos rostos forem detectados
-            return False, "Múltiplos rostos detectados. Apenas um rosto é permitido para o cadastro."
-
-
-        face_encoding = face_recognition.face_encodings(rgb_frame, face_locations)[0]
-
-        astronaut_dir = "astronautas"
-        if not os.path.exists(astronaut_dir):
-            os.makedirs(astronaut_dir)
+        face = faces[0]
+        emb = face.embedding / np.linalg.norm(face.embedding)
 
         filename = f"{nome.replace(' ', '_')}.jpg"
-        image_path = os.path.join(astronaut_dir, filename)
-        cv2.imwrite(image_path, frame)
+        cv2.imwrite(os.path.join("astronautas", filename), frame)
 
-        self.known_face_encodings.append(face_encoding)
+        self.known_face_embeddings.append(emb)
         self.known_face_names.append(nome)
-        # Removido self.known_face_images.append(frame.copy()) que poderia consumir muita memória
-
         self._save_encodings()
 
         return True, f"Astronauta {nome} cadastrado com sucesso!"
-    
-    def reconhecer_rostos(self, frame):
-        """Reconhece rostos no frame e retorna nomes e coordenadas"""
-        if not self.known_face_encodings:
-            return []
 
-        h, w = frame.shape[:2]
-        scale = 1.0
-        if w >= 1920:
-            scale = 0.25
-        elif w >= 1280:
-            scale = 0.5
+    def reconhecer_rostos(self, frame, threshold=0.4):
+        faces = self.app.get(frame)
+        resultados = []
 
-        small_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
-        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-        
-        face_locations = face_recognition.face_locations(rgb_small_frame)
-        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
-        
-        face_names = []
-        face_coords = []
-        face_confidences = []
-        
-        for face_encoding, face_location in zip(face_encodings, face_locations):
-            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding)
-            name = "Desconhecido"
-            confidence = 0.0
-            
-            face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
-            
-            if len(face_distances) > 0:
-                best_match_index = np.argmin(face_distances)
-                confidence = 1 - face_distances[best_match_index]
-                
-                if matches[best_match_index] and confidence > 0.6:
-                    name = self.known_face_names[best_match_index]
+        for face in faces:
+            emb = face.embedding / np.linalg.norm(face.embedding)
 
-            top, right, bottom, left = face_location
-            top = int(top / scale)
-            right = int(right / scale)
-            bottom = int(bottom / scale)
-            left = int(left / scale)
+            if not self.known_face_embeddings:
+                # se não há cadastros ainda, mostra como desconhecido
+                resultados.append(("Desconhecido", face.bbox.astype(int), 0.0))
+                continue
 
-            face_names.append(name)
-            face_coords.append((left, top, right, bottom))
-            face_confidences.append(confidence)
-            
-        return list(zip(face_names, face_coords, face_confidences))
-    
-    def get_astronauta_info(self, nome):
-        """Retorna informações sobre um astronauta específico"""
-        if nome in self.known_face_names:
-            index = self.known_face_names.index(nome)
-            return {
-                'nome': nome,
-                'imagem': self.known_face_images[index] if index < len(self.known_face_images) else None
-            }
-        return None
-    
+            # calcula similaridade
+            sims = np.dot(self.known_face_embeddings, emb)
+            idx = int(np.argmax(sims))
+            score = sims[idx]
+
+            if score > threshold:
+                nome = self.known_face_names[idx]
+            else:
+                nome = "Desconhecido"
+
+            resultados.append((nome, face.bbox.astype(int), float(score)))
+
+        return resultados
+
     def listar_astronautas(self):
-        """Retorna lista de todos os astronautas cadastrados"""
         return self.known_face_names.copy()
