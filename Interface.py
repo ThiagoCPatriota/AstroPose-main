@@ -9,7 +9,7 @@ from PySide6.QtGui import (QPainter, QColor, QFont, QImage, QPixmap)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QPushButton, QTextEdit, QStackedWidget, QLineEdit, QGroupBox, QFormLayout,
-    QStatusBar, QButtonGroup, QComboBox, QSpinBox, QCheckBox
+    QStatusBar, QButtonGroup, QComboBox, QSpinBox, QCheckBox, QMessageBox
 )
 import qt_material
 from PIL import Image
@@ -436,12 +436,19 @@ class DetectionWorker(QObject):
     finished = Signal()
     fps_signal = Signal(float)
     res_signal = Signal(str)
+    registration_finished = Signal(bool, str)
 
     def __init__(self, config=None):
         super().__init__()
         self._running = False
         self.pose_detector = None
         self.config = config or {}
+
+    @Slot()
+    def process_registration_capture(self):
+        if self.pose_detector:
+            success, message = self.pose_detector.finalizar_cadastro_astronauta()
+            self.registration_finished.emit(success, message)
 
     @Slot()
     def start_worker(self):
@@ -853,6 +860,8 @@ class AstroPoseMainWindow(QMainWindow):
         self.worker.res_signal.connect(self._on_res)
         self.worker.finished.connect(self._on_worker_finished)
 
+        self.worker.registration_finished.connect(self._show_registration_popup)
+
         self.worker_thread.started.connect(self.worker.start_worker)
         self.worker_thread.start()
 
@@ -957,6 +966,14 @@ class AstroPoseMainWindow(QMainWindow):
             pass
         return getattr(self, "_last_keypoints", None)
 
+    @Slot(bool, str)
+    def _show_registration_popup(self, success, message):
+        """Exibe um pop-up com o resultado do cadastro."""
+        if success:
+            QMessageBox.information(self, "Cadastro de Astronauta", message)
+        else:
+            QMessageBox.warning(self, "Cadastro de Astronauta", message)
+
     def _iniciar_cadastro(self):
         nome = self.input_name.text().strip()
         if not nome:
@@ -978,18 +995,14 @@ class AstroPoseMainWindow(QMainWindow):
         if self.cadastro_ativo:
             if self.worker and self.worker.pose_detector:
                 try:
-                    ret, frame = self.worker.pose_detector.cap.read()
-                    if ret:
-                        success = self.worker.pose_detector.finalizar_cadastro_astronauta(frame)
-                        if success:
-                            self.info_text.append("Astronauta cadastrado com sucesso!")
-                            self.cadastro_ativo = False
-                        else:
-                            self.info_text.append("Erro ao cadastrar astronauta. Verifique se há um rosto visível.")
-                        return
-                except Exception:
-                    pass
-            self.info_text.append("Não foi possível acessar a câmera para captura.")
+                    self.worker.process_registration_capture()
+
+                    self.cadastro_ativo = False
+                    self.input_name.clear()
+                except Exception as e:
+                    self.info_text.append(f"Erro inesperado durante a captura: {e}")
+            else:
+                self.info_text.append("Não foi possível acessar a câmera para captura.")
 
     # ----------------- styles -----------------
     def _card_style(self):

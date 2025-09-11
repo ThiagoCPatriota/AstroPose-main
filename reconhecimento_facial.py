@@ -64,43 +64,42 @@ class ReconhecimentoFacial:
         
         with open(encodings_file, 'wb') as f:
             pickle.dump(data, f)
-    
+
     def cadastrar_astronauta(self, frame, nome=None):
-        """Cadastra um novo astronauta a partir do frame atual"""
-        if nome is None:
-            root = tk.Tk()
-            root.withdraw()
-            nome = simpledialog.askstring("Cadastro", "Digite o nome do astronauta:")
-            root.destroy()
-            
-            if not nome:
-                return False
-        
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if not nome:
+            # Retorna uma mensagem de erro se o nome estiver vazio
+            return False, "Nome não fornecido."
+
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         face_locations = face_recognition.face_locations(rgb_frame)
-        
+
         if not face_locations:
-            messagebox.showerror("Erro", "Nenhum rosto detectado na imagem!")
-            return False
-        
+            # Retorna erro se nenhum rosto for detectado
+            return False, "Nenhum rosto detectado na imagem!"
+
+        if len(face_locations) > 1:
+            # Retorna erro se múltiplos rostos forem detectados
+            return False, "Múltiplos rostos detectados. Apenas um rosto é permitido para o cadastro."
+
+
         face_encoding = face_recognition.face_encodings(rgb_frame, face_locations)[0]
-        
+
         astronaut_dir = "astronautas"
         if not os.path.exists(astronaut_dir):
             os.makedirs(astronaut_dir)
-        
+
         filename = f"{nome.replace(' ', '_')}.jpg"
         image_path = os.path.join(astronaut_dir, filename)
         cv2.imwrite(image_path, frame)
-        
+
         self.known_face_encodings.append(face_encoding)
         self.known_face_names.append(nome)
-        self.known_face_images.append(frame.copy())
-        
+        # Removido self.known_face_images.append(frame.copy()) que poderia consumir muita memória
+
         self._save_encodings()
-        
-        messagebox.showinfo("Sucesso", f"Astronauta {nome} cadastrado com sucesso!")
-        return True
+
+        return True, f"Astronauta {nome} cadastrado com sucesso!"
     
     def reconhecer_rostos(self, frame):
         """Reconhece rostos no frame e retorna nomes e coordenadas"""

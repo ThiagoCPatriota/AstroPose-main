@@ -116,20 +116,28 @@ class PoseDetector:
         self.cadastro_ativo = True
         self.nome_cadastro = nome
 
-    def finalizar_cadastro_astronauta(self, frame):
-        if getattr(self, "cadastro_ativo", False):
-            if self.face_recognizer:
-                try:
-                    success = self.face_recognizer.cadastrar_astronauta(frame, self.nome_cadastro)
+    def finalizar_cadastro_astronauta(self):
+        if self.cadastro_ativo and self.face_recognizer:
+            try:
+                # Captura o frame mais recente diretamente da câmera
+                ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    return False, "Falha ao capturar imagem da câmera."
+
+                # Chama a função de cadastro (que agora não recebe mais o frame como argumento)
+                success, message = self.face_recognizer.cadastrar_astronauta(frame, self.nome_cadastro)
+
+                if success:
                     self.cadastro_ativo = False
                     self.nome_cadastro = None
-                    return success
-                except Exception as e:
-                    print(f"Erro ao cadastrar astronauta: {e}")
-                    self.cadastro_ativo = False
-                    self.nome_cadastro = None
-                    return False
-        return False
+
+                return success, message
+            except Exception as e:
+                print(f"Erro ao finalizar cadastro: {e}")
+                self.cadastro_ativo = False
+                self.nome_cadastro = None
+                return False, f"Erro interno: {e}"
+        return False, "O modo de cadastro não está ativo."
 
     def set_resolution(self, width, height):
         self.width = int(width)
