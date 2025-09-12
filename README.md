@@ -40,8 +40,19 @@ Com o python instalado, instale as bibliotecas do projeto com o comando
 ```
 pip install -r requirements.txt
 ```
+### NVIDIA <img src="https://img.shields.io/badge/nvidia-blue?logo=nvidia">
+Se você tem uma placa de vídeo da NVIDIA ou que ofereça suporte ao `onnxruntime-gpu`, instale com 
+```
+pip install onnxruntime-gpu
+```
 
-E rode o projeto com o comando
+###  Outras Placas de Vídeo
+Se você tem uma placa de vídeo da AMD ou utilizar gráfico integrado, use o comando
+```
+pip install onnxruntime
+```
+
+Agora basta apenas iniciar o projeto com o comando
 ```
 python Interface.py
 ```
