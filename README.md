@@ -1,58 +1,88 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.8%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/Machine%20Learning-Enabled-orange?logo=OpenAI" alt="Machine Learning">
-  <img src="https://img.shields.io/badge/CMake-Build%20Tool-informational?logo=cmake" alt="CMake">
-  <img src="https://img.shields.io/badge/Visual%20Studio-C%2B%2B%20Build%20Tools-purple?logo=visualstudio" alt="Visual Studio C++">
+  <img src="https://img.shields.io/badge/Framework-PySide6-informational?logo=qt" alt="PySide6">
+  <img src="https://img.shields.io/badge/IA-YOLOv8%20%26%20InsightFace-orange?logo=OpenAI" alt="Machine Learning">
 </p>
+<h1 align="center">
+  🚀 AstroPose - Coach de Postura com IA
+</h1>
 
-# 🧠 Projeto de Inteligência Artificial
+AstroPose é um projeto de Inteligência Artificial desenvolvido em Python que utiliza visão computacional para analisar a postura corporal em tempo real. A aplicação deteta keypoints do corpo humano para avaliar e fornecer feedback sobre diversos exercícios e posições, como agachamentos, alinhamento dos ombros e inclinação do tronco.
 
-Este é um projeto de Inteligência Artificial desenvolvido em **Python**, que depende de bibliotecas que exigem compilação via **CMake** e **Visual Studio C++ Build Tools**.
+O projeto inclui ainda um sistema de reconhecimento facial para identificar "astronautas" (utilizadores) cadastrados e uma interface gráfica moderna construída com PySide6.
 
 ---
 
 ## ⚙️ Pré-requisitos
 
-Antes de instalar as dependências do projeto, certifique-se de ter os seguintes itens instalados corretamente no seu sistema:
+Antes de executar o projeto, certifique-se de ter os seguintes pré-requisitos instalados no seu sistema.
 
-### 🛠️ 1. Visual Studio (C++ Build Tools)
+### 1. Python
+- **Python 3.8 ou superior**. Pode verificar a sua versão com o comando:
+  ```bash
+  python --version
+  ```
 
-- Instale o [Visual Studio](https://visualstudio.microsoft.com/) com os **C++ Build Tools**.
-- Durante a instalação, certifique-se de marcar a opção:
-  - `Desenvolvimento para desktop com C++`
-
-### 🧱 2. CMake
-
-- Baixe e instale o [CMake](https://cmake.org/download/).
-- Após a instalação, adicione o caminho do CMake à variável de ambiente `PATH`, se não for feito automaticamente.
+### 2. Ferramentas de Compilação (Obrigatório)
+Algumas bibliotecas de visão computacional, como `insightface`, precisam de compilar código C++.
+- **Visual Studio (com C++ Build Tools):** Instale o [Visual Studio](https://visualstudio.microsoft.com/) e, durante a instalação, marque a opção **"Desenvolvimento para desktop com C++"**.
+- **CMake:** Faça o download e instale o [CMake](https://cmake.org/download/). Adicione o caminho do CMake à sua variável de ambiente `PATH` se o instalador não o fizer automaticamente.
 
 ---
 
-## 🐍 3. Python
+## 🚀 Instalação e Execução
 
-Certifique-se de ter o **Python 3.8 ou superior** instalado. Você pode verificar sua versão com:
+1.  **Clone o repositório:**
+    ```bash
+    git clone [https://github.com/seu-usuario/AstroPose-main.git](https://github.com/seu-usuario/AstroPose-main.git)
+    cd AstroPose-main
+    ```
 
-```bash
-python --version
-```
+2.  **Crie um ambiente virtual (Recomendado):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # No Windows: venv\Scripts\activate
+    ```
 
-Com o python instalado, instale as bibliotecas do projeto com o comando
-```
-pip install -r requirements.txt
-```
-### NVIDIA <img src="https://img.shields.io/badge/nvidia-blue?logo=nvidia">
-Se você tem uma placa de vídeo da NVIDIA ou que ofereça suporte ao `onnxruntime-gpu`, instale com 
-```
-pip install onnxruntime-gpu
-```
+3.  **Instale as dependências:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-###  Outras Placas de Vídeo
-Se você tem uma placa de vídeo da AMD ou utilizar gráfico integrado, use o comando
-```
-pip install onnxruntime
-```
+4.  **Instale o `onnxruntime` de acordo com o seu hardware:**
+    * **Para placas de vídeo NVIDIA (recomendado para melhor desempenho):**
+        ```bash
+        pip install onnxruntime-gpu
+        ```
+    * **Para outras placas (AMD, Intel) ou para usar a CPU:**
+        ```bash
+        pip install onnxruntime
+        ```
 
-Agora basta apenas iniciar o projeto com o comando
+5.  **Execute a aplicação principal:**
+    ```bash
+    python main.py
+    ```
+
+---
+
+## 📂 Estrutura do Projeto
+
+O projeto está organizado da seguinte forma para garantir modularidade e clareza:
+
 ```
-python Interface.py
+astropose/
+│
+├── assets/             # Ficheiros de recursos, como imagens da UI.
+├── models/             # Modelos de Machine Learning (ex: yolov8n-pose.pt).
+├── scripts/            # Scripts auxiliares, como a versão 'sem_placa'.
+├── src/                # Diretório principal do código-fonte.
+│   ├── analysis/       # Classes para análises de postura específicas.
+│   ├── core/           # Núcleo da aplicação (detector, reconhecimento facial).
+│   ├── ui/             # Lógica da interface gráfica (PySide6).
+│   └── utils/          # Funções de utilidade e cálculos.
+│
+├── main.py             # Ponto de entrada para executar a aplicação.
+├── requirements.txt    # Lista de dependências Python.
+└── README.md           # Este ficheiro.
 ```
