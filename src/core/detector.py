@@ -74,10 +74,14 @@ class PoseDetector:
                 except Exception:
                     pass
         except Exception as e:
-            raise Exception(f"Erro ao carregar modelo ({self.model_path}): {e}")
+            raise FileNotFoundError(f"Erro ao carregar o modelo de pose em '{self.model_path}'. Verifique o caminho. Detalhes: {e}")
 
         # camera
         self.cap = cv2.VideoCapture(self.camera_index)
+        if not self.cap.isOpened():
+            # Lança um erro claro se a câmara não estiver disponível
+            raise IOError(f"Não foi possível abrir a câmara com o índice {self.camera_index}.")
+
         # set requested capture resolution
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
@@ -98,7 +102,14 @@ class PoseDetector:
         self.tempo_agachamento_incorreto = {}
 
         # Face recognizer (heavy) - keep but can be disabled
-        self.face_recognizer = ReconhecimentoFacial() if self.face_recognition_enabled else None
+        self.face_recognizer = None
+        if self.face_recognition_enabled:
+            try:
+                self.face_recognizer = ReconhecimentoFacial()
+            except Exception as e:
+                print(f"AVISO: Não foi possível inicializar o reconhecimento facial: {e}")
+                self.face_recognition_enabled = False
+
         self.cadastro_ativo = False
         self.nome_cadastro = None
 
@@ -184,15 +195,18 @@ class PoseDetector:
                    - annotated_frame (np.array): Frame com as anotações visuais.
                    - keypoints (list): Lista de keypoints da pessoa principal.
         """
-        ret, frame = self.cap.read()
-        if not ret or frame is None:
-            raise Exception("Erro ao capturar o frame da webcam.")
+        try:
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                # Se não conseguir ler o frame, envia uma mensagem de erro e para.
+                raise IOError("Falha ao capturar o frame da câmara. A ligação pode ter sido perdida.")
+        except Exception as e:
+            self._last_result_cache = ([str(e)], None, None)
+            return self._last_result_cache
 
         now = time.time()
         elapsed_ms = (now - self._last_infer_time) * 1000.0
-        # se ainda não atingiu o intervalo, retorna dado cacheado (se houver)
         if self._last_result_cache is not None and elapsed_ms < self.frame_interval_ms:
-            # atualizar overlay leve (por ex: FPS/tempo) não é necessário - retornamos cache
             return self._last_result_cache
 
         # Preprocess: se for diferente da resolução solicitada, redimensiona para entrada do modelo

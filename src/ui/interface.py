@@ -494,7 +494,7 @@ class AstroPoseMainWindow(QMainWindow):
         self.chk_force_cpu.setChecked(False)
         config_row.addWidget(self.chk_force_cpu)
 
-        self.input_model = QLineEdit("yolov8n-pose.pt")
+        self.input_model = QLineEdit("models/yolov8n-pose.pt")
         self.input_model.setMaximumWidth(180)
         config_row.addWidget(self.input_model)
 
@@ -736,9 +736,14 @@ class AstroPoseMainWindow(QMainWindow):
             self.status_small.setText("Parado")
             return
 
-        # start the worker thread with configuration
         cfg = self._gather_settings()
-        self.worker = DetectionWorker(config=cfg)
+        try:
+            self.worker = DetectionWorker(config=cfg)
+        except (IOError, FileNotFoundError, Exception) as e:
+            QMessageBox.critical(self, "Erro de Inicialização", str(e))
+            self.status_small.setText("Erro!")
+            self.status_small.setStyleSheet("color: #f87171;")
+            return
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
 
