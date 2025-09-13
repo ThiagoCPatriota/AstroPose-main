@@ -12,46 +12,8 @@ from src.analysis import InclinacaoLombar
 from src.analysis import InclinacaoParaTras
 from src.analysis import TorcaoPescoco
 from src.core.reconhecimento_facial import ReconhecimentoFacial
+from src.utils import _to_np
 
-
-def _to_np(x):
-    """Converte um tensor (CPU/CUDA) para um array numpy."""
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
-
-def listar_resolucoes_suportadas(camera_index=0):
-    """
-    Verifica as resoluções comuns suportadas por uma câmera.
-
-    Args:
-        camera_index (int): O índice da câmera a ser testada.
-
-    Returns:
-        list: uma lista de tuplas (largura, altura) com as resoluções suportadas.
-    """
-    common_resolutions = [
-        (640, 480),
-        (800, 600),
-        (1024, 768),
-        (1280, 720),
-        (1600, 1200),
-        (1920, 1080),
-        (2560, 1440),
-        (3840, 2160),
-    ]
-
-    cap = cv2.VideoCapture(camera_index)
-    supported = []
-    for w, h in common_resolutions:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if (actual_w, actual_h) == (w, h):
-            supported.append((w, h))
-    cap.release()
-    return supported
 
 class PoseDetector:
     """
