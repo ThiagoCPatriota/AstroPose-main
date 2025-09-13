@@ -1,11 +1,31 @@
+import math
+
+
 class TorcaoPescoco:
+    """
+    Analisa a torção do pescoço com base na visibilidade das orelhas e na
+    distância do nariz aos ombros.
+    """
     def __init__(self, keypoints):
+        """
+        Inicializa a análise com os keypoints de uma pessoa.
+
+        Args:
+            keypoints (list): Lista de coordenadas (x, y, conf) dos keypoints da pose.
+        """
         self.nariz = keypoints[0]
         self.orelhaDi = keypoints[4]
         self.orelhaEs = keypoints[3]
         self.ombroEs = keypoints[5]
         self.ombroDi = keypoints[6]
+
     def calcular(self):
+        """
+        Calcula se há uma torção de pescoço significativa.
+
+        Returns:
+            bool: True se houver torção, False caso contrário.
+        """
         ombroDiExiste = True
         ombroEsExiste = True
         orelhaDiExiste = True

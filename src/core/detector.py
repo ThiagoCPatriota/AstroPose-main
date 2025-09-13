@@ -15,13 +15,21 @@ from src.core.reconhecimento_facial import ReconhecimentoFacial
 
 
 def _to_np(x):
-    """Converte tensor (CPU/CUDA) para numpy."""
+    """Converte um tensor (CPU/CUDA) para um array numpy."""
     if isinstance(x, torch.Tensor):
         return x.detach().cpu().numpy()
     return np.asarray(x)
 
 def listar_resolucoes_suportadas(camera_index=0):
-    """Tenta aplicar resoluções comuns e retorna apenas as suportadas pela câmera"""
+    """
+    Verifica as resoluções comuns suportadas por uma câmera.
+
+    Args:
+        camera_index (int): O índice da câmera a ser testada.
+
+    Returns:
+        list: uma lista de tuplas (largura, altura) com as resoluções suportadas.
+    """
     common_resolutions = [
         (640, 480),
         (800, 600),
@@ -47,15 +55,17 @@ def listar_resolucoes_suportadas(camera_index=0):
 
 class PoseDetector:
     """
-    PoseDetector otimizado:
-    - configurable: model_path, device (auto/force cpu), input resolution, frame interval (ms),
-      draw_annotations (bool: desenhar esqueleto minimal), face recognition on/off.
-    - caching de último resultado para frames pulados.
+    Classe principal para detecção de pose e análise de movimentos.
+
+    Gerencia a captura da câmera, o modelo YOLO, o reconhecimento facial e
+    a execução de várias análises de postura em tempo real.
     """
     def get_keypoints(self):
+        """Retorna os últimos keypoints detectados para a pessoa principal."""
         return getattr(self, "_last_keypoints_ui", None)
 
     def get_issue_code(self):
+        """Retorna o último código de problema de postura detectado."""
         return getattr(self, "_last_issue_code", "OK")
 
     def __init__(
@@ -69,6 +79,19 @@ class PoseDetector:
         force_cpu=False,
         face_recognition_enabled=True,
     ):
+        """
+        Inicializa o detector de pose.
+
+        Args:
+            camera_index (int): Índice da câmera a ser usada.
+            model_path (str): Caminho para o arquivo do modelo YOLOv8-pose.
+            width (int): Largura desejada para o frame da câmera.
+            height (int): Altura desejada para o frame da câmera.
+            frame_interval_ms (int): Intervalo em milissegundos entre as inferências.
+            draw_annotations (bool): Se True, desenha o esqueleto completo no frame.
+            force_cpu (bool): Se True, força o uso da CPU mesmo que uma GPU esteja disponível.
+            face_recognition_enabled (bool): Se True, habilita o reconhecimento facial.
+        """
         self.camera_index = camera_index
         self.width = int(width)
         self.height = int(height)
@@ -121,10 +144,17 @@ class PoseDetector:
             raise Exception("Erro ao acessar a webcam.")
 
     def iniciar_cadastro_astronauta(self, nome=None):
+        """Ativa o modo de cadastro de um novo astronauta."""
         self.cadastro_ativo = True
         self.nome_cadastro = nome
 
     def finalizar_cadastro_astronauta(self):
+        """
+        Finaliza o processo de cadastro, capturando o frame atual.
+
+        Returns:
+            tuple: Uma tupla (success, message) com o resultado do cadastro.
+        """
         if self.cadastro_ativo and self.face_recognizer:
             try:
                 # Captura o frame mais recente diretamente da câmera
@@ -147,6 +177,15 @@ class PoseDetector:
                 return False, f"Erro interno: {e}"
         return False, "O modo de cadastro não está ativo."
 
+    def liberarRecursos(self):
+        """Libera a câmera e fecha todas as janelas do OpenCV."""
+        try:
+            if self.cap:
+                self.cap.release()
+        except Exception:
+            pass
+        cv2.destroyAllWindows()
+
     def set_resolution(self, width, height):
         self.width = int(width)
         self.height = int(height)
@@ -158,14 +197,6 @@ class PoseDetector:
 
     def set_frame_interval(self, ms):
         self.frame_interval_ms = int(ms)
-
-    def liberarRecursos(self):
-        try:
-            if self.cap:
-                self.cap.release()
-        except Exception:
-            pass
-        cv2.destroyAllWindows()
 
     # ------------------------------
     # Funções utilitárias (mantidas/otimizadas)
@@ -180,14 +211,16 @@ class PoseDetector:
 
     def detectar_pose(self):
         """
-        Retorna (mensagens, annotated_frame, keypoints)
-        - annotated_frame: BGR image pronta para exibição
-        - keypoints: lista de keypoints (x,y,conf) para a pessoa principal (ou None)
-        Implementa:
-        - pular inferências por intervalo (frame_interval_ms)
-        - redimensionamento controlado
-        - evitar res0.plot() por padrão (menos custo)
-        - escala de keypoints do tamanho de entrada de volta para frame original
+        Captura um frame da câmera, executa a detecção e todas as análises.
+
+        Este é o método principal do loop de detecção. Ele gerencia o cache de
+        resultados para otimizar o desempenho e aplica as análises de postura.
+
+        Returns:
+            tuple: Uma tupla contendo (mensagens, annotated_frame, keypoints).
+                   - mensagens (list): Lista de alertas de postura.
+                   - annotated_frame (np.array): Frame com as anotações visuais.
+                   - keypoints (list): Lista de keypoints da pessoa principal.
         """
         ret, frame = self.cap.read()
         if not ret or frame is None:

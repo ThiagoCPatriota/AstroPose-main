@@ -1,12 +1,28 @@
 import numpy as np
 
 class InclinacaoLombar:
+    """
+    Analisa a inclinação lateral do tronco, verificando os ângulos dos ombros e quadris.
+    """
     def __init__(self, keypoints):
+        """
+        Inicializa a análise com os keypoints de uma pessoa.
+
+        Args:
+            keypoints (list): Lista de coordenadas (x, y, conf) dos keypoints da pose.
+        """
         self.ombro_esq = keypoints[5]
         self.ombro_dir = keypoints[6]
         self.quadril_esq = keypoints[11]
         self.quadril_dir = keypoints[12]
+
     def calcular(self):
+        """
+        Calcula se o ângulo de inclinação dos ombros ou dos quadris está em uma faixa de risco.
+
+        Returns:
+            bool: True se houver risco de inclinação lombar, False caso contrário.
+        """
         ANGULO_RISCO_MIN = 35
         ANGULO_RISCO_MAX = 75
         dy_ombro = self.ombro_dir[1] - self.ombro_esq[1]

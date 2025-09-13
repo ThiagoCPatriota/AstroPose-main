@@ -172,6 +172,9 @@ def _choose_sprite_auto(kp):
 
 # ---------------- CoachCanvas (QWidget) ----------------
 class CoachCanvas(QWidget):
+    """
+    Widget customizado para desenhar o astronauta-alvo e o esqueleto do utilizador.
+    """
     def __init__(self, colors=None, parent=None):
         super().__init__(parent)
         self.setMinimumSize(360, 320)
@@ -423,6 +426,9 @@ class CoachCanvas(QWidget):
 # Detection worker (QThread + QObject)
 # ==========================
 class DetectionWorker(QObject):
+    """
+    Worker que executa a detecção em uma thread separada para não travar a UI.
+    """
     frame_ready = Signal(object)          # numpy RGB frame
     annotated_ready = Signal(object)      # numpy BGR annotated (para fallback)
     messages_ready = Signal(list)
@@ -538,7 +544,14 @@ class DetectionWorker(QObject):
 # Main Window
 # ==========================
 class AstroPoseMainWindow(QMainWindow):
+    """
+    Janela principal da aplicação AstroPose.
+
+    Gerencia a interface do usuário (UI), inicia e para a detecção, e exibe
+    os resultados das análises de postura.
+    """
     def __init__(self):
+        """Inicializa a janela principal e configura a UI."""
         super().__init__()
         self.setWindowTitle("AstroPose — Coach de Postura (Demo)")
         self.resize(1200, 760)
@@ -556,12 +569,17 @@ class AstroPoseMainWindow(QMainWindow):
         self.combo_res.currentIndexChanged.connect(self._on_resolution_change)
 
     def _popular_resolucoes(self):
+        """Preenche o ComboBox com as resoluções suportadas pela câmara."""
         resolucoes = listar_resolucoes_suportadas(0)  # índice da webcam
         self.combo_res.clear()
         for w, h in resolucoes:
             self.combo_res.addItem(f"{w}x{h}", (w, h))
 
     def _on_resolution_change(self, index):
+        """
+        Slot chamado quando o utilizador muda a resolução no ComboBox.
+        Aplica a nova resolução na câmara se a deteção estiver ativa.
+        """
         if index >= 0:
             w, h = self.combo_res.itemData(index)
             if self.worker and self.worker.pose_detector:
@@ -581,6 +599,7 @@ class AstroPoseMainWindow(QMainWindow):
                 )
 
     def _setup_ui(self):
+        """Constrói todos os widgets e layouts da interface gráfica."""
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
@@ -696,6 +715,7 @@ class AstroPoseMainWindow(QMainWindow):
 
     # ----------------- pages -----------------
     def _page_resumo(self):
+        """Cria o widget da página 'Resumo'."""
         page = QWidget()
         l = QVBoxLayout(page)
         l.setContentsMargins(0, 0, 0, 0)
@@ -722,6 +742,7 @@ class AstroPoseMainWindow(QMainWindow):
         return page
 
     def _page_coach(self):
+        """Cria o widget da página 'Coach'."""
         page = QWidget()
         l = QVBoxLayout(page)
         l.setContentsMargins(0, 0, 0, 0)
@@ -747,6 +768,7 @@ class AstroPoseMainWindow(QMainWindow):
         return page
 
     def _page_metricas(self):
+        """Cria o widget da página 'Métricas'."""
         page = QWidget()
         l = QVBoxLayout(page)
         l.setContentsMargins(0, 0, 0, 0)
@@ -773,6 +795,7 @@ class AstroPoseMainWindow(QMainWindow):
         return page
 
     def _page_astronautas(self):
+        """Cria o widget da página 'Astronautas' para gestão de cadastros."""
         page = QWidget()
         l = QVBoxLayout(page)
         l.setContentsMargins(0, 0, 0, 0)
@@ -798,6 +821,16 @@ class AstroPoseMainWindow(QMainWindow):
 
     # ----------------- Helpers -----------------
     def _make_segment_button(self, text, checked=False):
+        """
+        Cria um botão estilizado para a barra de navegação entre páginas.
+
+        Args:
+            text (str): O texto do botão.
+            checked (bool): Se o botão deve iniciar como selecionado.
+
+        Returns:
+            QPushButton: O widget do botão criado.
+        """
         btn = QPushButton(text)
         btn.setCheckable(True)
         btn.setChecked(checked)
@@ -816,6 +849,12 @@ class AstroPoseMainWindow(QMainWindow):
         return btn
 
     def _gather_settings(self):
+        """
+        Reúne todas as configurações selecionadas na UI para iniciar o detector.
+
+        Returns:
+            dict: Um dicionário com todas as configurações.
+        """
         res_text = self.combo_res.currentText()
         w, h = map(int, res_text.split("x"))
         cfg = {
@@ -833,6 +872,7 @@ class AstroPoseMainWindow(QMainWindow):
     # ----------------- Integration with worker -----------------
     @Slot()
     def run_detection(self):
+        """Inicia ou para o worker de detecção de pose."""
         if self.worker_thread and self.worker:
             # already running -> stop
             self._stop_worker()
@@ -865,6 +905,7 @@ class AstroPoseMainWindow(QMainWindow):
         self.status_small.setStyleSheet("color: #f4b400;")
 
     def _stop_worker(self):
+        """Para a thread do worker de forma segura."""
         try:
             if self.worker:
                 self.worker.stop()
@@ -878,6 +919,12 @@ class AstroPoseMainWindow(QMainWindow):
 
     @Slot(object)
     def _on_frame_ready(self, frame_rgb):
+        """
+        Recebe um novo frame da câmera e o exibe na tela.
+
+        Args:
+            frame_rgb (np.array): O frame da câmera no formato RGB.
+        """
         try:
             h, w, ch = frame_rgb.shape
             qimg = QImage(frame_rgb.data, w, h, 3*w, QImage.Format.Format_RGB888)
@@ -900,6 +947,12 @@ class AstroPoseMainWindow(QMainWindow):
 
     @Slot(object)
     def _on_keypoints(self, keypoints):
+        """
+        Recebe os keypoints detectados e os envia para o canvas de análise.
+
+        Args:
+            keypoints (list): Lista de coordenadas (x, y, conf) da pose.
+        """
         self._last_keypoints = keypoints
         try:
             self.coach_canvas.update_pose(keypoints)

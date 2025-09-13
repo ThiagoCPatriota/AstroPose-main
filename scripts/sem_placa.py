@@ -1,3 +1,10 @@
+"""
+Script para executar uma versão simplificada da detecção de pose.
+
+Ideal para testes rápidos ou para uso em computadores sem uma GPU dedicada,
+forçando a execução na CPU.
+"""
+
 import tkinter as tk
 import cv2
 from src.core.detector import PoseDetector
