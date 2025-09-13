@@ -2,58 +2,38 @@ import cv2
 from ultralytics import YOLO
 import torch
 import time
-import math
 import numpy as np
-from reconhecimento_facial import ReconhecimentoFacial
 
-def _to_np(x):
-    """Converte tensor (CPU/CUDA) para numpy."""
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
+from src.analysis import Agachamento
+from src.analysis import AlinhamentoOmbros
+from src.analysis import CotoveloAcimaCabeca
+from src.analysis import InclinacaoFrontal
+from src.analysis import InclinacaoLombar
+from src.analysis import InclinacaoParaTras
+from src.analysis import TorcaoPescoco
+from src.core.reconhecimento_facial import ReconhecimentoFacial
+from src.utils import _to_np
 
-def listar_resolucoes_suportadas(camera_index=0):
-    """Tenta aplicar resoluções comuns e retorna apenas as suportadas pela câmera"""
-    common_resolutions = [
-        (640, 480),
-        (800, 600),
-        (1024, 768),
-        (1280, 720),
-        (1600, 1200),
-        (1920, 1080),
-        (2560, 1440),
-        (3840, 2160),
-    ]
-
-    cap = cv2.VideoCapture(camera_index)
-    supported = []
-    for w, h in common_resolutions:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if (actual_w, actual_h) == (w, h):
-            supported.append((w, h))
-    cap.release()
-    return supported
 
 class PoseDetector:
     """
-    PoseDetector otimizado:
-    - configurable: model_path, device (auto/force cpu), input resolution, frame interval (ms),
-      draw_annotations (bool: desenhar esqueleto minimal), face recognition on/off.
-    - caching de último resultado para frames pulados.
+    Classe principal para detecção de pose e análise de movimentos.
+
+    Gerencia a captura da câmera, o modelo YOLO, o reconhecimento facial e
+    a execução de várias análises de postura em tempo real.
     """
     def get_keypoints(self):
+        """Retorna os últimos keypoints detectados para a pessoa principal."""
         return getattr(self, "_last_keypoints_ui", None)
 
     def get_issue_code(self):
+        """Retorna o último código de problema de postura detectado."""
         return getattr(self, "_last_issue_code", "OK")
 
     def __init__(
         self,
         camera_index=0,
-        model_path="yolov8n-pose.pt",
+        model_path="models/yolov8n-pose.pt",
         width=640,
         height=480,
         frame_interval_ms=100,
@@ -61,6 +41,19 @@ class PoseDetector:
         force_cpu=False,
         face_recognition_enabled=True,
     ):
+        """
+        Inicializa o detector de pose.
+
+        Args:
+            camera_index (int): Índice da câmera a ser usada.
+            model_path (str): Caminho para o arquivo do modelo YOLOv8-pose.
+            width (int): Largura desejada para o frame da câmera.
+            height (int): Altura desejada para o frame da câmera.
+            frame_interval_ms (int): Intervalo em milissegundos entre as inferências.
+            draw_annotations (bool): Se True, desenha o esqueleto completo no frame.
+            force_cpu (bool): Se True, força o uso da CPU mesmo que uma GPU esteja disponível.
+            face_recognition_enabled (bool): Se True, habilita o reconhecimento facial.
+        """
         self.camera_index = camera_index
         self.width = int(width)
         self.height = int(height)
@@ -81,10 +74,14 @@ class PoseDetector:
                 except Exception:
                     pass
         except Exception as e:
-            raise Exception(f"Erro ao carregar modelo ({self.model_path}): {e}")
+            raise FileNotFoundError(f"Erro ao carregar o modelo de pose em '{self.model_path}'. Verifique o caminho. Detalhes: {e}")
 
         # camera
         self.cap = cv2.VideoCapture(self.camera_index)
+        if not self.cap.isOpened():
+            # Lança um erro claro se a câmara não estiver disponível
+            raise IOError(f"Não foi possível abrir a câmara com o índice {self.camera_index}.")
+
         # set requested capture resolution
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
@@ -105,7 +102,14 @@ class PoseDetector:
         self.tempo_agachamento_incorreto = {}
 
         # Face recognizer (heavy) - keep but can be disabled
-        self.face_recognizer = ReconhecimentoFacial() if self.face_recognition_enabled else None
+        self.face_recognizer = None
+        if self.face_recognition_enabled:
+            try:
+                self.face_recognizer = ReconhecimentoFacial()
+            except Exception as e:
+                print(f"AVISO: Não foi possível inicializar o reconhecimento facial: {e}")
+                self.face_recognition_enabled = False
+
         self.cadastro_ativo = False
         self.nome_cadastro = None
 
@@ -113,10 +117,17 @@ class PoseDetector:
             raise Exception("Erro ao acessar a webcam.")
 
     def iniciar_cadastro_astronauta(self, nome=None):
+        """Ativa o modo de cadastro de um novo astronauta."""
         self.cadastro_ativo = True
         self.nome_cadastro = nome
 
     def finalizar_cadastro_astronauta(self):
+        """
+        Finaliza o processo de cadastro, capturando o frame atual.
+
+        Returns:
+            tuple: Uma tupla (success, message) com o resultado do cadastro.
+        """
         if self.cadastro_ativo and self.face_recognizer:
             try:
                 # Captura o frame mais recente diretamente da câmera
@@ -139,6 +150,15 @@ class PoseDetector:
                 return False, f"Erro interno: {e}"
         return False, "O modo de cadastro não está ativo."
 
+    def liberarRecursos(self):
+        """Libera a câmera e fecha todas as janelas do OpenCV."""
+        try:
+            if self.cap:
+                self.cap.release()
+        except Exception:
+            pass
+        cv2.destroyAllWindows()
+
     def set_resolution(self, width, height):
         self.width = int(width)
         self.height = int(height)
@@ -151,14 +171,6 @@ class PoseDetector:
     def set_frame_interval(self, ms):
         self.frame_interval_ms = int(ms)
 
-    def liberarRecursos(self):
-        try:
-            if self.cap:
-                self.cap.release()
-        except Exception:
-            pass
-        cv2.destroyAllWindows()
-
     # ------------------------------
     # Funções utilitárias (mantidas/otimizadas)
     # ------------------------------
@@ -170,29 +182,31 @@ class PoseDetector:
         x1, y1, x2, y2 = map(int, xyxy[:4])
         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 5)
 
-    # ------------------------------
-    # Método principal de detecção otimizado
-    # ------------------------------
     def detectar_pose(self):
         """
-        Retorna (mensagens, annotated_frame, keypoints)
-        - annotated_frame: BGR image pronta para exibição
-        - keypoints: lista de keypoints (x,y,conf) para a pessoa principal (ou None)
-        Implementa:
-        - pular inferências por intervalo (frame_interval_ms)
-        - redimensionamento controlado
-        - evitar res0.plot() por padrão (menos custo)
-        - escala de keypoints do tamanho de entrada de volta para frame original
+        Captura um frame da câmera, executa a detecção e todas as análises.
+
+        Este é o método principal do loop de detecção. Ele gerencia o cache de
+        resultados para otimizar o desempenho e aplica as análises de postura.
+
+        Returns:
+            tuple: Uma tupla contendo (mensagens, annotated_frame, keypoints).
+                   - mensagens (list): Lista de alertas de postura.
+                   - annotated_frame (np.array): Frame com as anotações visuais.
+                   - keypoints (list): Lista de keypoints da pessoa principal.
         """
-        ret, frame = self.cap.read()
-        if not ret or frame is None:
-            raise Exception("Erro ao capturar o frame da webcam.")
+        try:
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                # Se não conseguir ler o frame, envia uma mensagem de erro e para.
+                raise IOError("Falha ao capturar o frame da câmara. A ligação pode ter sido perdida.")
+        except Exception as e:
+            self._last_result_cache = ([str(e)], None, None)
+            return self._last_result_cache
 
         now = time.time()
         elapsed_ms = (now - self._last_infer_time) * 1000.0
-        # se ainda não atingiu o intervalo, retorna dado cacheado (se houver)
         if self._last_result_cache is not None and elapsed_ms < self.frame_interval_ms:
-            # atualizar overlay leve (por ex: FPS/tempo) não é necessário - retornamos cache
             return self._last_result_cache
 
         # Preprocess: se for diferente da resolução solicitada, redimensiona para entrada do modelo
@@ -295,7 +309,6 @@ class PoseDetector:
                 agachamento_iniciado = {}
                 desalinhado = False
 
-                # Checks originais (mantidos) - mantemos proteções individuais
                 try:
                     if CotoveloAcimaCabeca(pessoaKey).calcular():
                         cotoveloAcima = True
@@ -315,7 +328,7 @@ class PoseDetector:
                     pass
 
                 try:
-                    val = inclinacaoFrontal(pessoaKey).calcular()
+                    val = InclinacaoFrontal(pessoaKey).calcular()
                     if val > 0.85:
                         inclinadoFrontal = True
                 except Exception:
@@ -392,7 +405,7 @@ class PoseDetector:
                     self.tempo_agachamento_incorreto.pop(i, None)
 
                 try:
-                    torceu = torcaoPescoco(pessoaKey).calcular()
+                    torceu = TorcaoPescoco(pessoaKey).calcular()
                     if torceu:
                         if i not in self.tempoTorcao:
                             self.tempoTorcao[i] = time.time()
@@ -441,130 +454,3 @@ class PoseDetector:
         self._last_result_cache = result
         self._last_infer_time = time.time()
         return result
-
-
-# ---------------- Verificadores (mantidos/otimizados) ----------------
-class CotoveloAcimaCabeca:
-    def __init__(self, keypoints):
-        self.cotoveloDireito = keypoints[8]
-        self.cotoveloEsquerdo = keypoints[7]
-        self.nariz = keypoints[0]
-    def calcular(self):
-        return (self.cotoveloDireito[1] < self.nariz[1]) or (self.cotoveloEsquerdo[1] < self.nariz[1])
-
-class InclinacaoParaTras:
-    def __init__(self, keypoints):
-        self.nariz = keypoints[0]
-        self.ombroDireito = keypoints[6]
-        self.ombroEsquerdo = keypoints[5]
-        self.quadrilDireito = keypoints[12]
-        self.quadrilEsquerdo = keypoints[11]
-    def calcular(self):
-        ombro_medio_x = (self.ombroDireito[0] + self.ombroEsquerdo[0]) / 2.0
-        quadril_medio_x = (self.quadrilDireito[0] + self.quadrilEsquerdo[0]) / 2.0
-        nariz_x = self.nariz[0]
-        ombros_inclinados = ombro_medio_x < (quadril_medio_x - 50)
-        cabeca_inclinada = nariz_x < (quadril_medio_x - 30)
-        return bool(ombros_inclinados and cabeca_inclinada)
-
-class inclinacaoFrontal:
-    def __init__(self, keypoints):
-        self.ombroDireito = keypoints[6]
-        self.ombroEsquerdo = keypoints[5]
-        self.quadrilDireito = keypoints[12]
-        self.quadrilEsquerdo = keypoints[11]
-        self.nariz = keypoints[0]
-    def calcular(self):
-        centroOmbrosY = (self.ombroDireito[1] + self.ombroEsquerdo[1]) / 2.0
-        centroQuadrisY = (self.quadrilDireito[1] + self.quadrilEsquerdo[1]) / 2.0
-        alturaCorpo = self.nariz[1] - centroQuadrisY
-        if abs(alturaCorpo) < 1e-6:
-            return 0.0
-        return (centroOmbrosY - centroQuadrisY) / alturaCorpo
-
-class AlinhamentoOmbros:
-    def __init__(self, keypoints):
-        self.ombro_direito = keypoints[6]
-        self.ombro_esquerdo = keypoints[5]
-    def verificar(self, limite_tolerancia=15):
-        diferenca_altura = abs(self.ombro_direito[1] - self.ombro_esquerdo[1])
-        return diferenca_altura > limite_tolerancia
-
-class torcaoPescoco:
-    def __init__(self, keypoints):
-        self.nariz = keypoints[0]
-        self.orelhaDi = keypoints[4]
-        self.orelhaEs = keypoints[3]
-        self.ombroEs = keypoints[5]
-        self.ombroDi = keypoints[6]
-    def calcular(self):
-        ombroDiExiste = True
-        ombroEsExiste = True
-        orelhaDiExiste = True
-        orelhaEsExiste = True
-        margem_percentual = 15
-        try:
-            distanciaOmbroDi = math.hypot(self.nariz[0] - self.ombroDi[0], self.nariz[1] - self.ombroDi[1])
-        except Exception:
-            ombroDiExiste = False
-            distanciaOmbroDi = 0.0
-        try:
-            distanciaOmbroEs = math.hypot(self.nariz[0] - self.ombroEs[0], self.nariz[1] - self.ombroEs[1])
-        except Exception:
-            ombroEsExiste = False
-            distanciaOmbroEs = 0.0
-        try:
-            distanciaOrelhaDi = math.hypot(self.nariz[0] - self.orelhaDi[0], self.nariz[1] - self.orelhaDi[1])
-        except Exception:
-            orelhaDiExiste = False
-            distanciaOrelhaDi = 0.0
-        try:
-            distanciaOrelhaEs = math.hypot(self.nariz[0] - self.orelhaEs[0], self.nariz[1] - self.orelhaEs[1])
-        except Exception:
-            orelhaEsExiste = False
-            distanciaOrelhaEs = 0.0
-
-        if ombroDiExiste and ombroEsExiste:
-            margem = margem_percentual / 100.0
-            diferenca_permitida = distanciaOmbroEs * margem
-            return abs(distanciaOmbroDi - distanciaOmbroEs) > diferenca_permitida
-
-        if ombroDiExiste and orelhaDiExiste and not orelhaEsExiste:
-            if distanciaOrelhaDi > distanciaOmbroDi:
-                return True
-        if ombroEsExiste and orelhaEsExiste and not orelhaDiExiste:
-            if distanciaOrelhaEs > distanciaOmbroEs:
-                return True
-        return False
-
-class InclinacaoLombar:
-    def __init__(self, keypoints):
-        self.ombro_esq = keypoints[5]
-        self.ombro_dir = keypoints[6]
-        self.quadril_esq = keypoints[11]
-        self.quadril_dir = keypoints[12]
-    def calcular(self):
-        ANGULO_RISCO_MIN = 35
-        ANGULO_RISCO_MAX = 75
-        dy_ombro = self.ombro_dir[1] - self.ombro_esq[1]
-        dx_ombro = self.ombro_dir[0] - self.ombro_esq[0]
-        dy_quadril = self.quadril_dir[1] - self.quadril_esq[1]
-        dx_quadril = self.quadril_dir[0] - self.quadril_esq[0]
-        angulo_ombro = abs(np.degrees(np.arctan2(dy_ombro, dx_ombro)))
-        angulo_quadril = abs(np.degrees(np.arctan2(dy_quadril, dx_quadril)))
-        risco_ombro = ANGULO_RISCO_MIN <= angulo_ombro <= ANGULO_RISCO_MAX
-        risco_quadril = ANGULO_RISCO_MIN <= angulo_quadril <= ANGULO_RISCO_MAX
-        return risco_ombro or risco_quadril
-
-class Agachamento:
-    def __init__(self, keypoints):
-        self.quadrilDireito = keypoints[12]
-        self.quadrilEsquerdo = keypoints[11]
-        self.joelhoDireito = keypoints[14]
-        self.joelhoEsquerdo = keypoints[13]
-    def calcular_angulo_joelho(self, lado):
-        if lado == "direito":
-            quadril, joelho = self.quadrilDireito, self.joelhoDireito
-        else:
-            quadril, joelho = self.quadrilEsquerdo, self.joelhoEsquerdo
-        return abs(joelho[1] - quadril[1])

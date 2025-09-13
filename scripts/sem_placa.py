@@ -1,13 +1,18 @@
+"""
+Script para executar uma versão simplificada da detecção de pose.
+
+Ideal para testes rápidos ou para uso em computadores sem uma GPU dedicada,
+forçando a execução na CPU.
+"""
+
 import tkinter as tk
 import cv2
-from detector import PoseDetector
+from src.core.detector import PoseDetector
 from tkinter import messagebox
-
-# Interface simples pra rodar detecções em modo "sem placa" usando PoseDetector otimizado
 
 detector = None
 
-def iniciar_camera_e_detector(model_path="yolov8n-pose.pt", width=640, height=480, interval_ms=150, force_cpu=True):
+def iniciar_camera_e_detector(model_path="models/yolov8n-pose.pt", width=640, height=480, interval_ms=150, force_cpu=True):
     global detector
     # inicializa detector com configurações mais leves
     detector = PoseDetector(
@@ -51,14 +56,14 @@ def _loop_detect(tipo):
 
 def IniciarDetecPadrao():
     liberar_camera()
-    iniciar_camera_e_detector(model_path="yolov8n-pose.pt", width=640, height=480, interval_ms=150, force_cpu=True)
+    iniciar_camera_e_detector(model_path="../models/yolov8n-pose.pt", width=640, height=480, interval_ms=150, force_cpu=True)
     _loop_detect("Padrão")
     liberar_camera()
 
 def IniciarDetecRapida():
     liberar_camera()
     # resolução menor e intervalo maior -> mais fps
-    iniciar_camera_e_detector(model_path="yolov8n-pose.pt", width=320, height=240, interval_ms=80, force_cpu=True)
+    iniciar_camera_e_detector(model_path="../models/yolov8n-pose.pt", width=320, height=240, interval_ms=80, force_cpu=True)
     _loop_detect("Rápida")
     liberar_camera()
 
